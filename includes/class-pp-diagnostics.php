@@ -112,6 +112,23 @@ class PP_Diagnostics {
 			empty( $violations ) ? 'pass' : 'warn',
 			empty( $violations ) ? 'Всички съществуват, публикувани са, стакват се с промо кодове (individual_use off), партньорите са активни.' : implode( ' · ', array_slice( $violations, 0, 8 ) ) );
 
+		/* 7a: обратното — спрени кодове / спрени партньори, чийто WC купон е още publish.
+		 * Gate-ът (woocommerce_coupon_is_valid) ги отказва при checkout, но е редно и WC да ги знае като draft. */
+		$stale = array();
+		$all   = $wpdb->get_results( 'SELECT * FROM ' . PP_Schema::table( 'coupons' ) );
+		foreach ( $all as $m ) {
+			$partner = PP_Partners::get( $m->partner_id );
+			$off     = (int) $m->active !== 1 || ! $partner || 'active' !== $partner->status;
+			if ( ! $off ) continue;
+			$post = $m->wc_coupon_id ? get_post( (int) $m->wc_coupon_id ) : null;
+			if ( $post && 'publish' === $post->post_status ) {
+				$stale[] = strtoupper( $m->coupon_code ) . ( (int) $m->active !== 1 ? ' (кодът е спрян)' : ' (партньорът е ' . ( $partner ? $partner->status : 'липсва' ) . ')' );
+			}
+		}
+		$out[] = self::c( 'Спрени кодове: WC купонът е draft',
+			empty( $stale ) ? 'pass' : 'warn',
+			empty( $stale ) ? 'Няма спрян код/партньор с още публикуван WC купон.' : 'Още publish в WC (gate-ът ги отказва, но ги прати в draft): ' . implode( ', ', array_slice( $stale, 0, 10 ) ) );
+
 		/* 7b: бял списък за комбиниране */
 		$wl = PP_Coupons::allowed_with_partner_list();
 		$wl_missing = array();

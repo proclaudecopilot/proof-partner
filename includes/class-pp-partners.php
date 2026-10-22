@@ -158,11 +158,13 @@ class PP_Partners {
 		if ( false === $res ) return new WP_Error( 'ap_db', 'Записът в базата отказа: ' . $wpdb->last_error );
 
 		// Status transition → coupon lifecycle. A paused partner's code must
-		// stop giving discounts, not just commissions.
+		// stop giving discounts, not just commissions. Keyed on the NEW status
+		// only: applicant→archived or a partner whose coupons were left live by
+		// an older version must pause too, not just active→paused.
 		if ( isset( $data['status'] ) && $data['status'] !== $old->status ) {
-			if ( in_array( $data['status'], array( 'paused', 'archived' ), true ) && 'active' === $old->status ) {
+			if ( in_array( $data['status'], array( 'paused', 'archived' ), true ) ) {
 				PP_Coupons::pause_partner_coupons( $partner_id );
-			} elseif ( 'active' === $data['status'] && in_array( $old->status, array( 'paused', 'archived' ), true ) ) {
+			} elseif ( 'active' === $data['status'] ) {
 				PP_Coupons::resume_partner_coupons( $partner_id );
 			}
 		}

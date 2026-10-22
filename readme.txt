@@ -26,6 +26,12 @@ Telegram сигнали, портал с табло/статистики/спр�
   (логин за портала) + ставка → партньор + mapping. ACFW условията (BOGO, cart conditions) не се пипат.
 
 == Changelog ==
+= 2.0.3 =
+* Спрян партньор (paused/archived) или спрян код: кодът вече се отказва на checkout от server gate-а,
+  независимо дали WC купонът е още publish (ръчно „Deactivate" на кода, статус сменен през стара версия,
+  WC object cache). Паузата на купоните вече се задейства при ВСЯКА смяна към paused/archived (не само от active)
+  и чисти WC кеша code→ID. Диагностика: нова проверка за спрени кодове с още публикуван WC купон.
+
 = 2.0.2 =
 * GitHub авто-ъпдейт: header „GitHub Plugin URI", LOGADOR GitHub Updater (mu-plugin, самоинсталира се), Release Action. Без функционални промени.
 

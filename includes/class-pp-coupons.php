@@ -216,10 +216,24 @@ class PP_Coupons {
 			);
 			if ( $c->wc_coupon_id && get_post( $c->wc_coupon_id ) ) {
 				wp_update_post( array( 'ID' => (int) $c->wc_coupon_id, 'post_status' => 'draft' ) );
+				self::flush_wc_code_cache( $c->coupon_code );
 			}
 			$n++;
 		}
 		return $n;
+	}
+
+	/**
+	 * WC помни code → coupon ID в object cache (група 'coupons'). По-старите
+	 * WC версии не го чистят при смяна на post_status през wp_update_post, и с
+	 * persistent cache (Redis/Memcached) draft-нат купон продължава да се прилага.
+	 */
+	public static function flush_wc_code_cache( $code ) {
+		if ( ! class_exists( 'WC_Cache_Helper' ) ) return;
+		$prefix = WC_Cache_Helper::get_cache_prefix( 'coupons' ) . 'coupon_id_from_code_';
+		foreach ( array_unique( array( (string) $code, wc_format_coupon_code( $code ), strtoupper( (string) $code ) ) ) as $k ) {
+			wp_cache_delete( $prefix . $k, 'coupons' );
+		}
 	}
 
 	/** Partner back to active: restore only the coupons WE paused. */
@@ -235,6 +249,7 @@ class PP_Coupons {
 			);
 			if ( $c->wc_coupon_id && get_post( $c->wc_coupon_id ) ) {
 				wp_update_post( array( 'ID' => (int) $c->wc_coupon_id, 'post_status' => 'publish' ) );
+				self::flush_wc_code_cache( $c->coupon_code );
 			}
 			$n++;
 		}

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Proof Partner
  * Description: Партньорска (affiliate) система за proofnutrition.eu. Купон при checkout = комисиона; per-partner ставки; правила за EPACK пакетите (фиксирана сума или %, с/без отстъпка за клиента); комисиона върху Sublium подновявания (никога / първите N / докато е активен); импорт на съществуващи купони (Advanced Coupons); lock при checkout, holding период, clawback, нощна равносметка, fullscreen табло, портал /partner.
- * Version: 2.0.2
+ * Version: 2.0.3
  * GitHub Plugin URI: proclaudecopilot/proof-partner
  * Author: Proof Nutrition
  * Requires Plugins: woocommerce
@@ -23,7 +23,7 @@ if ( defined( 'PROOF_PARTNER_VERSION' ) ) {
 	} );
 	return;
 }
-define( 'PROOF_PARTNER_VERSION', '2.0.2' );
+define( 'PROOF_PARTNER_VERSION', '2.0.3' );
 define( 'PROOF_PARTNER_FILE', __FILE__ );
 define( 'PROOF_PARTNER_DIR', plugin_dir_path( __FILE__ ) );
 

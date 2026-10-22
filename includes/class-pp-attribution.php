@@ -172,7 +172,21 @@ class PP_Attribution {
 			}
 		}
 
-		if ( PP_Coupons::get_mapping_by_code( $code ) ) {
+		$map = PP_Coupons::get_mapping_by_code( $code );
+		if ( $map ) {
+			// Партньорски код на спрян партньор / спряно mapping: не минава,
+			// независимо дали WC купонът е още publish (ръчно „Deactivate" на
+			// кода, смяна на статуса през стара версия, WC object cache, който
+			// още помни ID-то на draft-нат купон, и т.н.). Важи и за код, който
+			// вече е в количката — WC ре-валидира купоните при всяко преизчисление.
+			if ( (int) $map->active !== 1 ) {
+				throw new Exception( sprintf( 'Кодът %s вече не е активен.', strtoupper( $code ) ) );
+			}
+			$partner = PP_Partners::get( (int) $map->partner_id );
+			if ( ! $partner || 'active' !== $partner->status ) {
+				throw new Exception( sprintf( 'Кодът %s вече не е активен.', strtoupper( $code ) ) );
+			}
+
 			// Партньорски код: блокира се само ДРУГ партньорски.
 			if ( $partner_in_cart ) {
 				throw new Exception( sprintf(
