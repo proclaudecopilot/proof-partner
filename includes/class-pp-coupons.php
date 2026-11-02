@@ -336,7 +336,7 @@ class PP_Coupons_Runtime {
 		if ( empty( $q ) ) return;
 		WC()->session->__unset( self::FLASH );
 
-		$is_admin_user = current_user_can( 'manage_woocommerce' );
+		$is_admin_user = current_user_can( PP_Manager::CAP );
 		$out = '';
 		foreach ( $q as $f ) {
 			if ( ! empty( $f['a'] ) && ! $is_admin_user ) continue;
@@ -590,7 +590,7 @@ class PP_Coupons_Runtime {
 
 	public function selftest() {
 		if ( ! isset( $_GET['proof_partner_selftest'] ) ) return;
-		if ( ! current_user_can( 'manage_woocommerce' ) ) return;
+		if ( ! current_user_can( PP_Manager::CAP ) ) return;
 		nocache_headers();
 
 		$code = wc_format_coupon_code( sanitize_text_field( wp_unslash( $_GET['proof_partner_selftest'] ) ) );

@@ -3,8 +3,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
  * REST API for the fullscreen Partners app (and any future hub).
- * Namespace: proof-partner/v1. Auth: logged-in admin with manage_woocommerce
- * + standard WP REST nonce.
+ * Namespace: proof-partner/v1. Auth: logged-in user with proof_partner_manage (всеки с manage_woocommerce го има;
+ * Proof 2.1: и мениджърът от /partner/<slug>) + standard WP REST nonce.
  */
 class PP_Rest {
 
@@ -15,7 +15,7 @@ class PP_Rest {
 	}
 
 	public function permission() {
-		return current_user_can( 'manage_woocommerce' );
+		return current_user_can( PP_Manager::CAP );
 	}
 
 	public function routes() {
@@ -75,6 +75,47 @@ class PP_Rest {
 		register_rest_route( self::NS, '/payouts/notify', array( 'methods' => 'POST', 'callback' => array( $this, 'payouts_notify' ) ) + $p );
 		register_rest_route( self::NS, '/sweep', array( 'methods' => 'POST', 'callback' => array( $this, 'sweep_now' ) ) + $p );
 		register_rest_route( self::NS, '/sweep-status', array( 'methods' => 'GET', 'callback' => array( $this, 'sweep_status' ) ) + $p );
+		// Proof 2.1: бонус за мениджъра — таблото (мениджър: своето; админ: всеки профил) + отбелязване на изплащане (само админ)
+		register_rest_route( self::NS, '/bonus', array( 'methods' => 'GET', 'callback' => array( $this, 'bonus_get' ) ) + $p );
+		register_rest_route( self::NS, '/bonus/pay', array( 'methods' => 'POST', 'callback' => array( $this, 'bonus_pay' ) ) + $p );
+		register_rest_route( self::NS, '/bonus/payouts/(?P<id>\d+)/delete', array( 'methods' => 'POST', 'callback' => array( $this, 'bonus_payout_delete' ) ) + $p );
+	}
+
+	/* ---------- Proof 2.1: бонус за мениджъра ---------- */
+
+	/** Кой профил гледаме: мениджърът — само своя; администраторът — избрания (или първия с включен бонус). */
+	private function bonus_target( WP_REST_Request $req ) {
+		if ( PP_Manager::is_manager() ) return get_current_user_id();
+		if ( ! current_user_can( 'manage_woocommerce' ) ) return 0;
+		$want = absint( $req->get_param( 'manager' ) );
+		if ( $want && PP_Manager::is_manager( $want ) ) return $want;
+		$list = PP_Bonus::managers();
+		foreach ( $list as $m ) if ( $m['bonus'] ) return (int) $m['id'];
+		return $list ? (int) $list[0]['id'] : 0;
+	}
+
+	public function bonus_get( WP_REST_Request $req ) {
+		$uid   = $this->bonus_target( $req );
+		$admin = current_user_can( 'manage_woocommerce' ) && ! PP_Manager::is_manager();
+		$data  = $uid ? PP_Bonus::compute( $uid, sanitize_text_field( (string) $req->get_param( 'until' ) ) ) : PP_Bonus::compute( 0 );
+		$data['is_admin'] = $admin;
+		$data['managers'] = $admin ? array_values( array_filter( PP_Bonus::managers(), function ( $m ) { return 'manager' === $m['type']; } ) ) : array(); // само профилите от вид „мениджър“ трупат бонус
+		return rest_ensure_response( $data );
+	}
+
+	public function bonus_pay( WP_REST_Request $req ) {
+		if ( ! current_user_can( 'manage_woocommerce' ) || PP_Manager::is_manager() ) return new WP_Error( 'pp_forbidden', 'Изплащането на бонуса го отбелязва само администратор.', array( 'status' => 403 ) );
+		$b = (array) $req->get_json_params();
+		$r = PP_Bonus::add_payout( absint( $b['manager'] ?? 0 ), sanitize_text_field( (string) ( $b['until'] ?? '' ) ), (string) ( $b['amount'] ?? '' ), (string) ( $b['note'] ?? '' ) );
+		if ( is_wp_error( $r ) ) return $r;
+		return rest_ensure_response( array( 'ok' => true, 'id' => $r ) );
+	}
+
+	public function bonus_payout_delete( WP_REST_Request $req ) {
+		if ( ! current_user_can( 'manage_woocommerce' ) || PP_Manager::is_manager() ) return new WP_Error( 'pp_forbidden', 'Само администратор.', array( 'status' => 403 ) );
+		$r = PP_Bonus::delete_payout( (int) $req['id'] );
+		if ( is_wp_error( $r ) ) return $r;
+		return rest_ensure_response( array( 'ok' => true ) );
 	}
 
 	public function sweep_status() {
@@ -291,7 +332,7 @@ class PP_Rest {
 		if ( ! $partner ) return new WP_Error( 'ap_404', 'Партньорът липсва.', array( 'status' => 404 ) );
 		$user = $partner->user_id ? get_user_by( 'id', (int) $partner->user_id ) : false;
 		if ( ! $user ) return new WP_Error( 'ap_nouser', 'Партньорът няма свързан WP профил — създай му през импорта или регистрацията.', array( 'status' => 400 ) );
-		if ( user_can( $user, 'manage_woocommerce' ) ) return new WP_Error( 'ap_admin', 'Това е администраторски профил — не се пипа оттук.', array( 'status' => 403 ) );
+		if ( user_can( $user, PP_Manager::CAP ) ) return new WP_Error( 'ap_admin', 'Това е администраторски профил — не се пипа оттук.', array( 'status' => 403 ) );
 		return array( $partner, $user );
 	}
 
@@ -911,6 +952,11 @@ class PP_Rest {
 
 	public function partners_update( WP_REST_Request $req ) {
 		$b   = $req->get_json_params();
+		// Proof 2.1.1: имейлът (логинът в портала) се сменя оттук — живее на WP потребителя, не в partners
+		if ( array_key_exists( 'email', (array) $b ) ) {
+			$e = PP_Partners::set_email( (int) $req['id'], (string) $b['email'] );
+			if ( is_wp_error( $e ) ) return new WP_Error( 'ap_update', $e->get_error_message(), array( 'status' => 400 ) );
+		}
 		$res = PP_Partners::update( (int) $req['id'], array_intersect_key( (array) $b, array_flip( array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'notes', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next' ) ) ) );
 		if ( is_wp_error( $res ) ) return new WP_Error( 'ap_update', $res->get_error_message(), array( 'status' => 400 ) );
 		return $this->partners_get( $req );

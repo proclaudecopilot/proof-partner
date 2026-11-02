@@ -110,6 +110,26 @@ class PP_Partners {
 		return (int) $wpdb->insert_id;
 	}
 
+	/**
+	 * Proof 2.1.1: смяна на имейла на партньора (= логинът му в портала). Имейлът живее на WP потребителя,
+	 * не в таблицата partners — затова не минава през update(). Проверява се, че не е на друг WP потребител.
+	 */
+	public static function set_email( $partner_id, $email ) {
+		$p = self::get( $partner_id );
+		if ( ! $p ) return new WP_Error( 'ap_partner', 'Partner not found.' );
+		$email = sanitize_email( trim( (string) $email ) );
+		if ( ! is_email( $email ) ) return new WP_Error( 'ap_email', 'Невалиден email.' );
+		$user = $p->user_id ? get_user_by( 'id', (int) $p->user_id ) : false;
+		if ( ! $user ) return new WP_Error( 'ap_nouser', 'Партньорът няма свързан WP профил.' );
+		if ( 0 === strcasecmp( $user->user_email, $email ) ) return true; // без промяна
+		$other = get_user_by( 'email', $email );
+		if ( $other && (int) $other->ID !== (int) $user->ID ) return new WP_Error( 'ap_email', 'Имейлът „' . $email . '“ вече е на друг профил.' );
+		$r = wp_update_user( array( 'ID' => (int) $user->ID, 'user_email' => $email ) );
+		if ( is_wp_error( $r ) ) return new WP_Error( 'ap_email', 'WordPress отказа смяната: ' . $r->get_error_message() );
+		proof_partner_feed_push( 'diag', sprintf( '✉️ Имейлът на партньор %s е сменен: %s → %s', $p->display_name, $user->user_email, $email ) );
+		return true;
+	}
+
 	public static function update( $partner_id, $fields ) {
 		global $wpdb;
 		$allowed = array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'phone', 'channels', 'notes', 'referred_by', 'public_name', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next' );

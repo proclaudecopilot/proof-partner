@@ -3,7 +3,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class PP_Admin {
 
-	const CAP   = 'manage_woocommerce';
+	const CAP   = PP_Manager::CAP;
 	const NONCE = 'proof_partner_admin';
 
 	public function __construct() {
@@ -36,6 +36,8 @@ class PP_Admin {
 		add_submenu_page( 'proof-partner', 'Add Partner', 'Add Partner', self::CAP, 'proof-partner-add', array( $this, 'page_add' ) );
 		add_submenu_page( 'proof-partner', 'Commissions', 'Commissions', self::CAP, 'proof-partner-commissions', array( $this, 'page_commissions' ) );
 		add_submenu_page( 'proof-partner', 'Settings', 'Settings', self::CAP, 'proof-partner-settings', array( $this, 'page_settings' ) );
+		// Proof 2.1: достъпът до портала (мениджъри и потребители) се дава/маха ТУК (wp-admin), не от приложението — само администратор (manage_woocommerce).
+		add_submenu_page( 'proof-partner', 'Достъп до портала', '🔑 Достъп до портала', 'manage_woocommerce', 'proof-partner-managers', array( $this, 'page_managers' ) );
 	}
 
 	private function redirect( $args ) {
@@ -53,6 +55,13 @@ class PP_Admin {
 		check_admin_referer( self::NONCE );
 
 		$action = sanitize_key( $_REQUEST['ap_action'] );
+
+		// Proof 2.1: порталните профили — само администратор.
+		if ( 0 === strpos( $action, 'mgr_' ) ) {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'Insufficient permissions.' );
+			$this->handle_managers( $action );
+			return;
+		}
 
 		switch ( $action ) {
 
@@ -167,12 +176,160 @@ class PP_Admin {
 		}
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* Proof 2.1: Достъп до портала (мениджъри / потребители) — wp-admin    */
+	/* ------------------------------------------------------------------ */
+
+	private function handle_managers( $action ) {
+		$back = array( 'page' => 'proof-partner-managers' );
+		$fail = function ( $e ) use ( $back ) { $this->redirect( $back + array( 'ap_error' => rawurlencode( is_wp_error( $e ) ? $e->get_error_message() : (string) $e ) ) ); };
+
+		if ( 'mgr_address' === $action ) {
+			$r = PP_Manager::save_address( array( 'manager_slug' => wp_unslash( $_POST['manager_slug'] ?? '' ), 'manager_enabled' => ! empty( $_POST['manager_enabled'] ) ) );
+			if ( is_wp_error( $r ) ) $fail( $r );
+			$this->redirect( $back + array( 'ap_msg' => 'mgr_address' ) );
+		}
+		if ( 'mgr_save' === $action ) {
+			$bonus = (array) ( $_POST['bonus'] ?? array() );
+			$existing = 'existing' === ( $_POST['mgr_mode'] ?? '' ) ? sanitize_text_field( wp_unslash( $_POST['mgr_existing'] ?? '' ) ) : '';
+			if ( 'existing' === ( $_POST['mgr_mode'] ?? '' ) && '' === $existing ) $fail( 'Напиши потребителското име или имейла на WordPress потребителя.' );
+			$r = PP_Manager::save_profile( array(
+				'id'       => absint( $_POST['mgr_id'] ?? 0 ),
+				'existing' => $existing,
+				'login'    => wp_unslash( $_POST['mgr_login'] ?? '' ),
+				'name'     => wp_unslash( $_POST['mgr_name'] ?? '' ),
+				'email'    => wp_unslash( $_POST['mgr_email'] ?? '' ),
+				'pass'     => (string) wp_unslash( $_POST['mgr_pass'] ?? '' ),
+				'enabled'  => ! empty( $_POST['mgr_enabled'] ),
+				'type'     => 'user' === ( $_POST['mgr_type'] ?? '' ) ? 'user' : 'manager',
+				'bonus'    => array(
+					'from' => sanitize_text_field( wp_unslash( $bonus['from'] ?? '' ) ),
+					'pct'  => sanitize_text_field( wp_unslash( $bonus['pct'] ?? '' ) ),
+				),
+			) );
+			if ( is_wp_error( $r ) ) $fail( $r );
+			$this->redirect( $back + array( 'ap_msg' => absint( $_POST['mgr_id'] ?? 0 ) ? 'mgr_saved' : 'mgr_created' ) );
+		}
+		if ( 'mgr_toggle' === $action ) {
+			$uid = absint( $_GET['mgr'] ?? 0 );
+			if ( ! PP_Manager::is_manager( $uid ) ) $fail( 'Няма такъв портален профил.' );
+			$on = ! PP_Manager::user_enabled( $uid );
+			update_user_meta( $uid, PP_Manager::META_ENABLED, $on ? '1' : '0' );
+			if ( ! $on ) { $st = WP_Session_Tokens::get_instance( $uid ); if ( $st ) $st->destroy_all(); }
+			$this->redirect( $back + array( 'ap_msg' => $on ? 'mgr_on' : 'mgr_off' ) );
+		}
+		if ( 'mgr_delete' === $action ) {
+			$r = PP_Manager::delete_profile( absint( $_GET['mgr'] ?? 0 ) );
+			if ( is_wp_error( $r ) ) $fail( $r );
+			$this->redirect( $back + array( 'ap_msg' => 'mgr_deleted' ) );
+		}
+		if ( 'mgr_seed_hide' === $action ) {
+			delete_option( PP_Manager::OPT_SEED );
+			$this->redirect( $back + array( 'ap_msg' => 'mgr_seed_hidden' ) );
+		}
+		$fail( 'Непознато действие.' );
+	}
+
+	public function page_managers() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'Insufficient permissions.' );
+		$st     = PP_Manager::status();
+		$users  = PP_Manager::users();
+		$edit   = absint( $_GET['mgr_edit'] ?? 0 );
+		$editU  = $edit ? get_user_by( 'id', $edit ) : null;
+		if ( $editU && ! in_array( PP_Manager::ROLE, (array) $editU->roles, true ) ) $editU = null;
+		$ep     = $editU ? PP_Manager::profile( $editU ) : null;
+		$bonus  = $ep ? $ep['bonus'] : PP_Bonus::defaults();
+		$type   = $ep ? $ep['type'] : 'manager';
+		$appUrl = admin_url( 'admin.php?page=proof-partner#/bonus' );
+		$home   = home_url( '/partner/' );
+		$fmt    = function ( $v, $dec = 2 ) { return rtrim( rtrim( number_format( (float) $v, $dec, '.', '' ), '0' ), '.' ); };
+
+		echo '<div class="wrap"><h1>🔑 Достъп до портала</h1>';
+		$this->notices();
+		/* 2.1.1: началната парола на готовия профил — генерирана на сайта при ъпдейта, показва се докато не бъде сменена или скрита */
+		$seed = get_option( PP_Manager::OPT_SEED );
+		if ( is_array( $seed ) && ! empty( $seed['pass'] ) && get_user_by( 'id', (int) ( $seed['uid'] ?? 0 ) ) ) {
+			echo '<div class="notice notice-info" style="padding:12px 16px"><p style="margin:0 0 6px"><strong>Готов профил за вход на мениджъра</strong> (създаден при ъпдейта на ' . esc_html( (string) ( $seed['t'] ?? '' ) ) . '). Прати му данните и го накарай да си смени паролата — или я смени ти от „Редакция“.</p>'
+				. '<p style="margin:0 0 6px">Адрес: ' . ( $st['manager_url'] ? '<a href="' . esc_url( $st['manager_url'] ) . '" target="_blank" rel="noopener"><strong>' . esc_html( $st['manager_url'] ) . '</strong></a>' : '<em>(попълни адреса по-долу)</em>' ) . '<br>Потребителско име: <code>' . esc_html( (string) $seed['login'] ) . '</code><br>Начална парола: <code>' . esc_html( (string) $seed['pass'] ) . '</code></p>'
+				. '<p style="margin:0"><a class="button button-small" href="' . esc_url( $this->action_url( array( 'page' => 'proof-partner-managers', 'ap_action' => 'mgr_seed_hide' ) ) ) . '">Записах си я — скрий</a> <span class="description">При смяна на паролата се скрива сама.</span></p></div>';
+		}
+		echo '<p class="description" style="max-width:860px">Тук даваш и махаш достъп до Партньорската книга. Профилите влизат <strong>само</strong> през формата на портала (адресът по-долу) — не през wp-login и не в wp-admin. Вид достъп: <strong>Мениджър</strong> трупа бонус (процент от нетния оборот — виж условията), <strong>Потребител</strong> вижда книгата без бонус. Администраторите на WordPress имат достъп и без това.</p>';
+
+		/* --- Адрес за вход --- */
+		echo '<h2 style="margin-top:1.4em">Адрес за вход</h2>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin.php' ) ) . '">';
+		wp_nonce_field( self::NONCE );
+		echo '<input type="hidden" name="ap_action" value="mgr_address">';
+		echo '<table class="form-table" style="max-width:860px">';
+		echo '<tr><th>Адрес</th><td><code>' . esc_html( $home ) . '</code><input type="text" name="manager_slug" value="' . esc_attr( $st['manager_slug'] ) . '" placeholder="mgr-proof" class="regular-text" style="width:200px" autocomplete="off"> <span class="description">3–40 знака: латински букви, цифри, - и _. Един адрес за всички профили (порталът на партньорите на /partner не се пипа).</span>'
+			. ( $st['manager_url'] ? '<br><a href="' . esc_url( $st['manager_url'] ) . '" target="_blank" rel="noopener"><strong>' . esc_html( $st['manager_url'] ) . '</strong></a>' : '<br><span class="description">Попълни адрес — линкът ще се появи тук.</span>' ) . '</td></tr>';
+		echo '<tr><th>Входът е активен</th><td><label><input type="checkbox" name="manager_enabled" value="1"' . checked( $st['manager_enabled'], true, false ) . '> Изключен = адресът дава 404 и никой портален профил не влиза.</label></td></tr>';
+		echo '</table><p><button class="button button-primary">Запази адреса</button></p></form>';
+
+		/* --- Списък --- */
+		echo '<h2 style="margin-top:1.4em">Профили с достъп (' . count( $users ) . ')</h2>';
+		echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Име</th><th>Потребител</th><th>Имейл</th><th>Вид</th><th>Статус</th><th>Последен вход</th><th>Бонус</th><th></th></tr></thead><tbody>';
+		foreach ( $users as $u ) {
+			$p   = PP_Manager::profile( $u );
+			$b   = $p['bonus'];
+			$bt  = 'manager' === $p['type']
+				? sprintf( '%s%% от нетния оборот от %s', $fmt( $b['pct'], 3 ), esc_html( date_i18n( 'd.m.Y', strtotime( $b['from'] ) ) ) )
+				: '<span class="description">—</span>';
+			$toggle = $this->action_url( array( 'page' => 'proof-partner-managers', 'ap_action' => 'mgr_toggle', 'mgr' => (int) $u->ID ) );
+			$del    = $this->action_url( array( 'page' => 'proof-partner-managers', 'ap_action' => 'mgr_delete', 'mgr' => (int) $u->ID ) );
+			$editL  = admin_url( 'admin.php?page=proof-partner-managers&mgr_edit=' . (int) $u->ID . '#mgr-form' );
+			printf(
+				'<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td style="white-space:nowrap"><a class="button button-small" href="%s">Редакция</a> <a class="button button-small" href="%s">%s</a> %s<a class="button button-small button-link-delete" href="%s" onclick="return confirm(\'%s\')">Махни достъпа</a></td></tr>',
+				esc_html( $p['name'] ), $p['created'] ? '' : ' <span class="description">(WP потребител)</span>', esc_html( $p['login'] ), esc_html( $p['email'] ?: '—' ),
+				'manager' === $p['type'] ? '<strong>Мениджър</strong>' : 'Потребител',
+				$p['enabled'] ? '<span style="color:#1f7a4d;font-weight:700">активен</span>' : '<span style="color:#b32d2e;font-weight:700">спрян</span>',
+				esc_html( $p['last_login'] ?: 'още не е влизал' ),
+				$bt,
+				esc_url( $editL ), esc_url( $toggle ), $p['enabled'] ? 'Спри' : 'Пусни',
+				'manager' === $p['type'] ? '<a class="button button-small" href="' . esc_url( $appUrl . '?manager=' . (int) $u->ID ) . '" target="_blank" rel="noopener">💶 Табло бонус</a> ' : '',
+				esc_url( $del ), esc_js( $p['created'] ? 'Махаш достъпа на ' . $p['login'] . '? WordPress потребителят ще бъде изтрит (историята на бонус изплащанията остава).' : 'Махаш достъпа до портала на ' . $p['login'] . '? WordPress потребителят остава, пада само ролята.' )
+			);
+		}
+		if ( empty( $users ) ) echo '<tr><td colspan="8">Още никой няма достъп — дай първия от формата по-долу.</td></tr>';
+		echo '</tbody></table>';
+
+		/* --- Нов / редакция --- */
+		echo '<h2 id="mgr-form" style="margin-top:1.6em">' . ( $ep ? 'Редакция: ' . esc_html( $ep['name'] ) . ' <a class="page-title-action" href="' . esc_url( admin_url( 'admin.php?page=proof-partner-managers' ) ) . '">+ нов достъп</a>' : 'Дай достъп' ) . '</h2>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin.php' ) ) . '" autocomplete="off" id="mgr-form-el">';
+		wp_nonce_field( self::NONCE );
+		echo '<input type="hidden" name="ap_action" value="mgr_save"><input type="hidden" name="mgr_id" value="' . ( $ep ? (int) $ep['id'] : 0 ) . '">';
+		echo '<table class="form-table" style="max-width:860px">';
+		if ( ! $ep ) {
+			echo '<tr><th>Кой</th><td><label style="margin-right:18px"><input type="radio" name="mgr_mode" value="new" checked onchange="document.querySelectorAll(\'.mgr-new\').forEach(function(r){r.style.display=\'\'});document.getElementById(\'mgr-existing-row\').style.display=\'none\'"> Нов профил (създава се WordPress потребител само за портала)</label><label><input type="radio" name="mgr_mode" value="existing" onchange="document.querySelectorAll(\'.mgr-new\').forEach(function(r){r.style.display=\'none\'});document.getElementById(\'mgr-existing-row\').style.display=\'\'"> Съществуващ WordPress потребител</label></td></tr>';
+			echo '<tr id="mgr-existing-row" style="display:none"><th>WordPress потребител</th><td><input type="text" name="mgr_existing" class="regular-text" placeholder="потребителско име или имейл" autocomplete="off"> <span class="description">получава достъп до портала в добавка към ролята си; махането му връща предишното състояние</span></td></tr>';
+		}
+		echo '<tr class="mgr-new"><th>Потребителско име</th><td><input type="text" name="mgr_login" value="' . esc_attr( $ep ? $ep['login'] : '' ) . '" class="regular-text" autocomplete="off" placeholder="manager"> <span class="description">латински букви, цифри, . - _ @</span></td></tr>';
+		echo '<tr class="mgr-new"><th>Име (как се показва)</th><td><input type="text" name="mgr_name" value="' . esc_attr( $ep ? $ep['name'] : '' ) . '" class="regular-text" placeholder="Име"></td></tr>';
+		echo '<tr class="mgr-new"><th>Имейл (по избор)</th><td><input type="email" name="mgr_email" value="' . esc_attr( $ep ? $ep['email'] : '' ) . '" class="regular-text"></td></tr>';
+		echo '<tr class="mgr-new"><th>' . ( $ep ? 'Нова парола' : 'Парола' ) . '</th><td><input type="password" name="mgr_pass" value="" class="regular-text" autocomplete="new-password"' . ( $ep ? ' placeholder="празно = без промяна"' : ' placeholder="поне 10 знака"' ) . '> <span class="description">поне 10 знака' . ( $ep ? '; смяната затваря отворените му сесии' : '' ) . '</span></td></tr>';
+		echo '<tr><th>Вид достъп</th><td><label style="margin-right:18px"><input type="radio" name="mgr_type" value="manager"' . checked( 'manager', $type, false ) . ' onchange="document.getElementById(\'mgr-bonus\').style.display=\'\'"> <strong>Мениджър</strong> — трупа бонус</label><label><input type="radio" name="mgr_type" value="user"' . checked( 'user', $type, false ) . ' onchange="document.getElementById(\'mgr-bonus\').style.display=\'none\'"> <strong>Потребител</strong> — вижда книгата, без бонус</label></td></tr>';
+		echo '<tr><th>Профилът е активен</th><td><label><input type="checkbox" name="mgr_enabled" value="1"' . checked( $ep ? $ep['enabled'] : true, true, false ) . '> спрян профил не влиза никъде</label></td></tr>';
+		echo '</table>';
+
+		echo '<div id="mgr-bonus"' . ( 'manager' === $type ? '' : ' style="display:none"' ) . '><h3 style="margin:1em 0 0">💶 Бонус за мениджъра</h3><p class="description">Процент от нетния оборот на цялата програма от началната дата нататък, без край. Мениджърът вижда таблото си в приложението (💶 Моят бонус); изплащането „до дата X по банка“ го отбелязва администратор пак там (💶 Бонус мениджър).</p>';
+		echo '<table class="form-table" style="max-width:860px">';
+		echo '<tr><th>Процентът — от дата</th><td><input type="date" name="bonus[from]" value="' . esc_attr( $bonus['from'] ) . '"> <span class="description">процентът е за всички партньорски поръчки от тази дата (по датата на поръчката)</span></td></tr>';
+		echo '<tr><th>% от нетния оборот</th><td><input type="number" step="0.001" min="0" max="100" name="bonus[pct]" value="' . esc_attr( $bonus['pct'] ) . '" style="width:90px"> % <span class="description">от <strong>всички</strong> реализирани (доставени) партньорски поръчки; оборот = стойността на продуктите след отстъпката на клиента (без доставка, нето от връщания) <strong>минус комисионата на партньора</strong>. Фиксираните договори по фактура не влизат.</span></td></tr>';
+		echo '</table></div>';
+		echo '<p><button class="button button-primary">' . ( $ep ? 'Запази' : 'Дай достъп' ) . '</button></p></form>';
+
+		echo '<hr><p class="description">След 5 грешни опита входът се заключва за 15 минути (известие във фийда/Telegram). Таблото на бонуса и отбелязването на изплащанията: <a href="' . esc_url( $appUrl ) . '">Партньорска книга → 💶 Бонус мениджър</a>.</p>';
+		echo '</div>';
+	}
+
 	private function notices() {
 		if ( ! empty( $_GET['ap_error'] ) ) {
 			echo '<div class="notice notice-error"><p>' . esc_html( rawurldecode( $_GET['ap_error'] ) ) . '</p></div>';
 		}
 		if ( ! empty( $_GET['ap_msg'] ) ) {
-			echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( ucwords( str_replace( '_', ' ', sanitize_key( $_GET['ap_msg'] ) ) ) ) . '.</p></div>';
+			$k = sanitize_key( $_GET['ap_msg'] );
+			$nice = array( 'mgr_address' => '✅ Адресът за вход е запазен.', 'mgr_created' => '✅ Достъпът е даден — прати адреса на портала, потребителското име и паролата.', 'mgr_saved' => '✅ Профилът е запазен.', 'mgr_on' => '✅ Профилът е пуснат.', 'mgr_off' => '⏸ Профилът е спрян (сесиите му са затворени).', 'mgr_deleted' => '🗑 Достъпът е махнат.', 'mgr_seed_hidden' => '✅ Началната парола е скрита.' );
+			echo '<div class="notice notice-success is-dismissible"><p>' . ( isset( $nice[ $k ] ) ? esc_html( $nice[ $k ] ) : esc_html( ucwords( str_replace( '_', ' ', $k ) ) ) . '.' ) . '</p></div>';
 		}
 	}
 

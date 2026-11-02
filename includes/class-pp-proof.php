@@ -170,7 +170,7 @@ class PP_Proof {
 
 	/* ── 4. REST: правила + импорт на купони ── */
 	public function routes() {
-		$p = array( 'permission_callback' => function () { return current_user_can( 'manage_woocommerce' ); } );
+		$p = array( 'permission_callback' => function () { return current_user_can( PP_Manager::CAP ); } );
 		register_rest_route( PP_Rest::NS, '/proof/settings', array( 'methods' => 'GET', 'callback' => array( $this, 'settings_get' ) ) + $p );
 		register_rest_route( PP_Rest::NS, '/proof/settings', array( 'methods' => 'POST', 'callback' => array( $this, 'settings_save' ) ) + $p );
 		register_rest_route( PP_Rest::NS, '/proof/import/coupons', array( 'methods' => 'GET', 'callback' => array( $this, 'import_list' ) ) + $p );

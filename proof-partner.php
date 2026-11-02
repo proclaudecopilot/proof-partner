@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Proof Partner
  * Description: Партньорска (affiliate) система за proofnutrition.eu. Купон при checkout = комисиона; per-partner ставки; правила за EPACK пакетите (фиксирана сума или %, с/без отстъпка за клиента); комисиона върху Sublium подновявания (никога / първите N / докато е активен); импорт на съществуващи купони (Advanced Coupons); lock при checkout, holding период, clawback, нощна равносметка, fullscreen табло, портал /partner.
- * Version: 2.0.2
+ * Version: 2.1.1
  * GitHub Plugin URI: proclaudecopilot/proof-partner
  * Author: Proof Nutrition
  * Requires Plugins: woocommerce
@@ -23,7 +23,7 @@ if ( defined( 'PROOF_PARTNER_VERSION' ) ) {
 	} );
 	return;
 }
-define( 'PROOF_PARTNER_VERSION', '2.0.2' );
+define( 'PROOF_PARTNER_VERSION', '2.1.1' );
 define( 'PROOF_PARTNER_FILE', __FILE__ );
 define( 'PROOF_PARTNER_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -42,8 +42,10 @@ function proof_partner_log_shield( $where, $e ) {
 }
 }
 try {
+	require_once PROOF_PARTNER_DIR . 'includes/class-pp-manager.php'; // Proof 2.1: способността PP_Manager::CAP — преди класовете, които я ползват като константа
 	require_once PROOF_PARTNER_DIR . 'includes/class-pp-schema.php';
 	require_once PROOF_PARTNER_DIR . 'includes/class-pp-partners.php';
+	require_once PROOF_PARTNER_DIR . 'includes/class-pp-bonus.php';   // Proof 2.1: бонус за мениджъра (условия на профила, сметка, изплащания)
 	require_once PROOF_PARTNER_DIR . 'includes/class-pp-coupons.php';
 	require_once PROOF_PARTNER_DIR . 'includes/class-pp-attribution.php';
 	require_once PROOF_PARTNER_DIR . 'includes/class-pp-engine.php';
@@ -90,6 +92,7 @@ if ( ! function_exists( 'proof_partner_register_rewrite' ) ) {
 function proof_partner_register_rewrite() {
 	add_rewrite_rule( '^p/([A-Za-z0-9\-_]+)/?$', 'index.php?proof_partner_ref=$matches[1]', 'top' );
 	add_rewrite_rule( '^partner/?$', 'index.php?proof_partner_portal=1', 'top' );
+	if ( class_exists( 'PP_Manager' ) ) PP_Manager::register_rewrite(); // Proof 2.1: /partner/<slug> — вход за мениджъра
 }
 }
 
@@ -233,6 +236,24 @@ add_action( 'plugins_loaded', function () {
 			}
 		} );
 
+		// Proof 2.1.1: готов профил за вход на мениджъра — адрес /partner/proof-mgr + потребител proofmanager.
+		// Еднократно. Паролата се генерира ТУК, на сайта (не стои в кода), и се показва веднъж в
+		// wp-admin → Proof Partner → 🔑 Достъп до портала (само за администратор), откъдето и се сменя.
+		$mig( 'seed_manager_login', function () {
+			if ( ! class_exists( 'PP_Manager' ) ) return;
+			PP_Manager::ensure_role();
+			$s = get_option( 'proof_partner_settings', array() ); if ( ! is_array( $s ) ) $s = array();
+			if ( '' === PP_Manager::sanitize_slug( (string) ( $s['manager_slug'] ?? '' ) ) ) { $s['manager_slug'] = 'proof-mgr'; $s['manager_enabled'] = 1; update_option( 'proof_partner_settings', $s ); }
+			if ( get_user_by( 'login', 'proofmanager' ) || PP_Manager::users() ) return; // вече има профил — не пипаме
+			$pass = wp_generate_password( 16, false );
+			$uid  = PP_Manager::save_profile( array(
+				'id' => 0, 'login' => 'proofmanager', 'name' => 'Мениджър', 'email' => '',
+				'pass' => $pass, 'enabled' => 1, 'type' => 'manager',
+				'bonus' => array( 'from' => current_time( 'Y-m-d' ), 'pct' => 5 ),
+			) );
+			if ( ! is_wp_error( $uid ) ) update_option( PP_Manager::OPT_SEED, array( 'uid' => (int) $uid, 'login' => 'proofmanager', 'pass' => $pass, 't' => current_time( 'mysql' ) ), false );
+		} );
+
 		// Rewrite rules may be new in this version — flush lazily on next init.
 		add_action( 'init', function () { proof_partner_register_rewrite(); flush_rewrite_rules(); }, 99 );
 
@@ -282,6 +303,7 @@ add_action( 'plugins_loaded', function () {
 	new PP_Coupons_Runtime();
 	new PP_Dashboard();
 	new PP_Portal();
+	new PP_Manager(); // Proof 2.1: /partner/<slug> — вход за мениджъра + роля/способност
 	new PP_Rest();
 	new PP_Proof(); new PP_Offers();
 	if ( is_admin() ) {
@@ -345,6 +367,8 @@ function proof_partner_settings() {
 		'fixed_wish_end'        => 'Надяваме се другия месец да имаш повече късмет!',
 		'fixed_wish_next'       => 'Надяваме се през текущия месец да имаш повече късмет!',
 		'legacy_portal_slug'    => '',
+		'manager_slug'          => '', // Proof 2.1: /partner/<slug> — вход за мениджърите (празно = няма такъв адрес); профилите са в wp-admin → Достъп до портала
+		'manager_enabled'       => 1,
 		'migration_email'       => 'Здравей, {name}!
 
 Партньорската програма на {brand} се премести на нова платформа — по-бърза, с табло на живо, статистики и месечни справки.

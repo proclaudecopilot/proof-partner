@@ -289,7 +289,7 @@ class PP_Portal {
 			$this->statement( (int) $_GET['statement'] );
 			exit;
 		}
-		if ( isset( $_GET['statements'] ) && current_user_can( 'manage_woocommerce' ) ) {
+		if ( isset( $_GET['statements'] ) && current_user_can( PP_Manager::CAP ) ) {
 			$this->statements_batch( sanitize_text_field( wp_unslash( $_GET['statements'] ) ) );
 			exit;
 		}
@@ -338,6 +338,11 @@ class PP_Portal {
 			$partner = PP_Partners::get_by_user( get_current_user_id() );
 			if ( ! $partner ) return new WP_Error( 'ap_auth', 'Профилът не е партньорски.' );
 			$channels = array_filter( array_map( 'sanitize_text_field', (array) ( $_POST['channels'] ?? array() ) ) );
+			// Proof 2.1.1: партньорът сам си поправя имейла (логина) — проверка, че не е на друг профил
+			if ( isset( $_POST['email'] ) ) {
+				$e = PP_Partners::set_email( $partner->partner_id, (string) wp_unslash( $_POST['email'] ) );
+				if ( is_wp_error( $e ) ) return $e;
+			}
 			$res = PP_Partners::update( $partner->partner_id, array(
 				'legal_name' => $_POST['latin_name'] ?? '',
 				'iban'       => $_POST['iban'] ?? '',
@@ -530,7 +535,7 @@ class PP_Portal {
 		// Админ view-as: гледаш портала през очите на партньора, БЕЗ подмяна
 		// на сесията ти. Формите са заключени — само гледаш.
 		$view_as = 0;
-		if ( isset( $_GET['view_as'] ) && current_user_can( 'manage_woocommerce' ) ) {
+		if ( isset( $_GET['view_as'] ) && current_user_can( PP_Manager::CAP ) ) {
 			$view_as = absint( $_GET['view_as'] );
 		}
 		$BS      = proof_partner_settings();
@@ -768,6 +773,7 @@ class PP_Portal {
 			<h2>Моите данни</h2>
 			<form method="post"<?php echo $view_as ? ' style="pointer-events:none;opacity:.65"' : ''; ?>><?php wp_nonce_field( self::NONCE ); ?>
 				<input type="hidden" name="ap_portal_action" value="profile">
+				<label>Email (с него влизаш в портала)<input type="email" name="email" value="<?php echo esc_attr( wp_get_current_user()->user_email ); ?>" required autocomplete="email"></label>
 				<label>Имена на латиница (за изплащанията)<input type="text" name="latin_name" value="<?php echo esc_attr( $partner->legal_name ?? '' ); ?>"></label>
 				<label>Име в класацията на Играта (по избор — псевдоним)<input type="text" name="public_name" value="<?php echo esc_attr( $partner->public_name ?? '' ); ?>" placeholder="напр. Мая К."></label>
 				<label>IBAN за възнагражденията<input type="text" name="iban" value="<?php echo esc_attr( $partner->iban ?? '' ); ?>" placeholder="BG.."></label>
@@ -802,7 +808,7 @@ class PP_Portal {
 	<section class="pp-card pp-auth">
 		<h2>Този профил не е партньорски</h2>
 		<p class="pp-hint">Влязъл/ла си като <strong><?php echo esc_html( $cu->user_email ); ?></strong> — този email няма партньорски профил. Възможно е партньорската ти регистрация да е с ДРУГ email.</p>
-		<?php if ( current_user_can( 'manage_woocommerce' ) ) : ?>
+		<?php if ( current_user_can( PP_Manager::CAP ) ) : ?>
 			<p class="pp-hint" style="background:#fdf3e3;border-radius:12px;padding:10px 14px">👑 Това е <strong>администраторски</strong> профил. Порталът е за партньори — за да видиш нечие табло, ползвай „Виж портала като него" от <a href="<?php echo esc_url( admin_url( 'admin.php?page=proof-partner' ) ); ?>">админ панела</a>.</p>
 		<?php endif; ?>
 		<form method="post" style="display:inline"><?php wp_nonce_field( self::NONCE ); ?>
@@ -1120,7 +1126,7 @@ class PP_Portal {
 		$partner = PP_Partners::get( $payout->partner_id );
 		if ( ! $partner ) wp_die( 'Партньорът липсва.', '', array( 'response' => 404 ) );
 
-		$is_admin = current_user_can( 'manage_woocommerce' );
+		$is_admin = current_user_can( PP_Manager::CAP );
 		$is_own   = is_user_logged_in() && (int) $partner->user_id === get_current_user_id();
 		if ( ! $is_admin && ! $is_own ) wp_die( 'Нямаш достъп до тази справка.', '', array( 'response' => 403 ) );
 
