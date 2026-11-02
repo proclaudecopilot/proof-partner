@@ -203,6 +203,20 @@ class PP_Schema {
 			KEY partner_id (partner_id)
 		) {$charset};" );
 
+		// Proof 2.1: изплащания към мениджъра (performance bonus) — „изплатено по банка до дата X: сума“.
+		$mpay = self::table( 'manager_payouts' );
+		dbDelta( "CREATE TABLE {$mpay} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			user_id BIGINT UNSIGNED NOT NULL,
+			amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+			until DATE NOT NULL,
+			note VARCHAR(255) NOT NULL DEFAULT '',
+			created_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			PRIMARY KEY  (id),
+			KEY user_id (user_id)
+		) {$charset};" );
+
 		$points  = self::table( 'points' );
 		$content = self::table( 'content' );
 

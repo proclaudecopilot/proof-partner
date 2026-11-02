@@ -324,7 +324,7 @@ class PP_Offers {
 
 	/* ═══════════ 7. REST ═══════════ */
 	public function routes() {
-		$p = array( 'permission_callback' => function () { return current_user_can( 'manage_woocommerce' ); } );
+		$p = array( 'permission_callback' => function () { return current_user_can( PP_Manager::CAP ); } );
 		register_rest_route( PP_Rest::NS, '/proof/offers', array(
 			array( 'methods' => 'GET', 'callback' => array( $this, 'r_get' ) ) + $p,
 			array( 'methods' => 'POST', 'callback' => array( $this, 'r_save' ) ) + $p,

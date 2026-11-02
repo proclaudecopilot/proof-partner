@@ -3,7 +3,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class PP_Payouts {
 
-	const CAP   = 'manage_woocommerce';
+	const CAP   = PP_Manager::CAP;
 	const NONCE = 'proof_partner_payouts';
 
 	public function __construct() {

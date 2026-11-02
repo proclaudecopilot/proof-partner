@@ -196,6 +196,7 @@
 					'<a href="#/partners" data-r="partners"><span class="ico">◉</span>Партньори</a>' +
 					'<a href="#/commissions" data-r="commissions"><span class="ico">≣</span>Комисиони</a>' +
 					'<a href="#/payouts" data-r="payouts"><span class="ico">↧</span>Изплащания</a>' +
+					(BOOT.bonusNav ? '<a href="#/bonus" data-r="bonus"><span class="ico">💶</span>' + (BOOT.isManager ? 'Моят бонус' : 'Бонус мениджър') + '</a>' : '') +
 					'<a href="#/marketing" data-r="marketing"><span class="ico">📣</span>Маркетинг</a>' +
 					'<a href="#/proof" data-r="proof"><span class="ico">📦</span><span title="Пакети · Подновявания">Пакети</span></a>' +
 					'<a href="#/import" data-r="import"><span class="ico">⇲</span>Импорт купони</a>' +
@@ -204,14 +205,16 @@
 					'<a href="#/diagnostics" data-r="diagnostics"><span class="ico">✓</span>Диагностика</a>' +
 				'</nav>' +
 				'<div class="ap-side-foot">' +
-					'<a href="' + esc(BOOT.settingsUrl) + '">Настройки</a>' +
-					'<a href="' + esc(BOOT.classicUrl) + '">Класически изглед</a>' +
+					(BOOT.logoutUrl ? '<a href="' + esc(BOOT.logoutUrl) + '">⏏ Изход' + (BOOT.user ? ' (' + esc(BOOT.user) + ')' : '') + '</a>' : '') +
+					// Proof 2.1: мениджърът от /partner/<slug> няма wp-admin — линковете натам са само за администратора
+					(BOOT.isManager ? '' : '<a href="' + esc(BOOT.settingsUrl) + '">Настройки</a>' + '<a href="' + esc(BOOT.classicUrl) + '">Класически изглед</a>') +
 				'</div>' +
 			'</aside>' +
 			'<div class="ap-main">' +
 				'<header class="ap-top">' +
 					'<h1 id="ap-title">Табло</h1>' +
 					'<div class="ap-owed"><div class="lbl">Дължимо към партньори</div><div class="val" id="ap-owed">—</div></div>' +
+					(BOOT.logoutUrl ? '<a class="ap-btn ghost sm ap-top-logout" href="' + esc(BOOT.logoutUrl) + '" style="text-decoration:none" title="Изход">⏏</a>' : '') +
 				'</header>' +
 				'<main class="ap-content" id="ap-view"></main>' +
 			'</div>';
@@ -447,6 +450,7 @@
 		if (seg[0] === 'commissions')         return viewCommissions(qs);
 		if (seg[0] === 'payouts' && seg[1])   return viewPayout(parseInt(seg[1], 10));
 		if (seg[0] === 'payouts')             return viewPayouts();
+		if (seg[0] === 'bonus')               return viewBonus(qs);      // Proof 2.1: бонус за мениджъра
 		if (seg[0] === 'diagnostics')         return viewDiagnostics();
 		if (seg[0] === 'marketing')           return viewMarketing();
 		if (seg[0] === 'proof')               return viewProof();
@@ -2266,6 +2270,150 @@
 					.catch(function (err) { det.querySelector('.ap-oi').innerHTML = '<span class="ap-muted">' + esc(err.message) + '</span>'; });
 			});
 		});
+	}
+
+	/* =============== 💶 БОНУС ЗА МЕНИДЖЪРА (Proof 2.1) =============== */
+	/* Само процентът от нетния оборот (без еднократния бонус за нов партньор от ANSA).
+	 * Мениджърът вижда своето табло; администраторът — всеки профил + отбелязва „изплатено по банка до дата X“. */
+	function viewBonus(qs) {
+		var isMgr = !!BOOT.isManager;
+		loading(isMgr ? 'Моят бонус' : 'Бонус мениджър');
+		var MONTHS_BG = ['януари','февруари','март','април','май','юни','юли','август','септември','октомври','ноември','декември'];
+		function ymLabel(ym) { var p = (ym || '').split('-'); return p.length === 2 ? MONTHS_BG[parseInt(p[1], 10) - 1] + ' ' + p[0] : ym; }
+		function dmy(s) { return (s || '').slice(0, 10).split('-').reverse().join('.'); }
+		function num(v) { return String(parseFloat(v) || 0).replace('.', ','); }
+		var mgr = qs && qs.manager ? parseInt(qs.manager, 10) : (viewBonus._mgr || 0);
+		var now = new Date(), prevEnd = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 0)).toISOString().slice(0, 10); // последният ден на предишния месец
+		var until = (qs && qs.until) || viewBonus._until || prevEnd;
+
+		api('bonus?manager=' + (mgr || '') + '&until=' + encodeURIComponent(until)).then(function (d) {
+			viewBonus._mgr = d.manager ? d.manager.id : 0;
+			viewBonus._until = until;
+			var T = d.totals || {}, t = d.terms || {}, html = '';
+
+			if (d.is_admin) {
+				var ms = d.managers || [];
+				html += '<div class="ap-panel"><h2>Мениджър<span class="sp"></span>' +
+					(ms.length ? '<select class="ap-input" id="bn-mgr" style="width:auto;padding:7px 12px">' + ms.map(function (m) { return '<option value="' + m.id + '"' + (d.manager && d.manager.id === m.id ? ' selected' : '') + '>' + esc(m.name) + ' (' + esc(m.login) + ')' + (m.enabled ? '' : ' · спрян') + '</option>'; }).join('') + '</select>' : '') + '</h2>' +
+					(ms.length ? '' : '<p class="ap-muted" style="padding:0 18px 14px">Още няма профил от вид „мениджър“ — бонусът се трупа само за такива. Дава се от WordPress → Proof Partner → 🔑 Достъп до портала.</p>') +
+					'</div>';
+			}
+
+			if (!d.manager || !t.enabled) {
+				html += '<div class="ap-panel"><div style="padding:18px"><b>' + (d.manager ? esc(d.manager.name) + ' не трупа бонус (достъп „потребител“)' : 'Няма избран мениджър') + '</b></div></div>';
+				$title.textContent = isMgr ? 'Моят бонус' : 'Бонус мениджър';
+				$view.innerHTML = html;
+				bindMgrSelect();
+				return;
+			}
+
+			var termsTxt = '<b>' + num(t.pct) + ' %</b> от нетния оборот на всички партньорски поръчки от <b>' + dmy(t.from) + '</b> нататък (стойност на продуктите след отстъпката на клиента, без доставка, нето от връщания, <b>минус комисионата на партньора</b>)';
+
+			html += '<div class="ap-slips">' +
+				'<div class="ap-slip leaf"><div class="lbl">За изплащане</div><div class="val">' + money(T.due) + '</div><div class="sub">натрупано ' + money(T.earned) + ' − изплатено ' + money(T.paid) + '</div></div>' +
+				'<div class="ap-slip"><div class="lbl">' + num(t.pct) + ' % от нетния оборот</div><div class="val">' + money(T.pct_amount) + '</div><div class="sub">нетен оборот ' + money(T.base) + ' · ' + T.orders + ' поръчки</div></div>' +
+				'<div class="ap-slip amber"><div class="lbl">Оборот на програмата</div><div class="val">' + money(T.turnover) + '</div><div class="sub">− ' + money(T.commissions) + ' комисиони · ' + T.partners_with_orders + ' ' + (T.partners_with_orders === 1 ? 'партньор с поръчки' : 'партньори с поръчки') + (T.waiting ? ' · ⏳ ' + T.waiting + ' чакат доставка' : '') + '</div></div>' +
+				'<div class="ap-slip"><div class="lbl">Изплатено</div><div class="val">' + money(T.paid) + '</div><div class="sub">' + (d.paid_until ? 'по банка до ' + dmy(d.paid_until) : 'още нищо не е изплащано') + '</div></div>' +
+			'</div>';
+			html += '<p class="ap-muted" style="margin:-4px 0 14px">' + (isMgr ? 'Условия: ' : esc(d.manager.name) + ' · условия: ') + termsTxt + '. Реализирана поръчка = доставена (поръчката е в спечелен статус в WooCommerce — брои се и докато комисионата на партньора е още „Изчакваща“ в периода на задържане); чакащите доставка, сторнираните и фиксираните договори по фактура не влизат.</p>';
+
+			if (d.is_admin) {
+				html += '<div class="ap-panel"><h2>Отбележи изплащане по банка<span class="sp"></span></h2><div style="padding:0 18px 16px">' +
+					'<div class="ap-inline">' +
+					'<div class="ap-field w-s"><label>Изплатено до дата</label><input class="ap-input" type="date" id="bn-until" value="' + esc(d.cut.until) + '"></div>' +
+					'<div class="ap-field w-s"><label>Сума (€)</label><input class="ap-input" type="number" step="0.01" min="0" id="bn-amount" value="' + esc(String(Math.max(0, d.cut.due).toFixed(2))) + '"></div>' +
+					'<div class="ap-field"><label>Бележка (по избор)</label><input class="ap-input" id="bn-note" placeholder="напр. превод 05.11, Wise"></div>' +
+					'<button type="button" class="ap-btn leaf" id="bn-pay">Отбележи изплащане</button>' +
+					'</div>' +
+					'<p class="ap-muted" id="bn-cut" style="margin:10px 0 0">Натрупано до ' + dmy(d.cut.until) + ': <b>' + money(d.cut.earned) + '</b> · вече изплатено: <b>' + money(d.cut.paid) + '</b> · остава: <b>' + money(d.cut.due) + '</b>. Месеците до тази дата ще се покажат като „изплатено“.</p>' +
+					'</div></div>';
+			}
+
+			/* --- по месеци --- */
+			html += '<div class="ap-panel"><h2>По месеци<span class="sp"></span></h2>' +
+				'<table class="ap-table"><thead><tr><th>Месец</th><th style="text-align:right">Поръчки</th><th style="text-align:right">Оборот</th><th style="text-align:right">Комисиони партньори</th><th style="text-align:right">Нетен оборот</th><th style="text-align:right">' + num(t.pct) + ' %</th><th>Статус</th></tr></thead><tbody>';
+			if (!(d.months || []).length) html += '<tr><td colspan="7" class="empty">Още няма месеци — началната дата е ' + dmy(t.from) + '.</td></tr>';
+			(d.months || []).forEach(function (m) {
+				var cur = m.ym === now.toISOString().slice(0, 7);
+				html += '<tr>' +
+					'<td><strong>' + esc(ymLabel(m.ym)) + '</strong>' + (cur ? ' <span class="ap-muted">· тече</span>' : '') + '</td>' +
+					'<td class="num">' + m.orders + '</td>' +
+					'<td class="num">' + money(m.turnover, '') + '</td>' +
+					'<td class="num">− ' + money(m.commissions, '') + '</td>' +
+					'<td class="num">' + money(m.base, '') + '</td>' +
+					'<td class="num ' + (m.total > 0 ? 'pos' : '') + '">' + money(m.total) + '</td>' +
+					'<td>' + (m.paid ? chip('paid', 'Изплатено') : (m.total > 0 ? (cur ? chip('pending', 'Тече') : chip('approved', 'За изплащане')) : '<span class="ap-muted">—</span>')) + '</td>' +
+				'</tr>';
+			});
+			html += '</tbody>' + ((d.months || []).length ? '<tfoot><tr><th>Общо</th><th class="num">' + T.orders + '</th><th class="num">' + money(T.turnover, '') + '</th><th class="num">− ' + money(T.commissions, '') + '</th><th class="num">' + money(T.base, '') + '</th><th class="num">' + money(T.earned) + '</th><th></th></tr></tfoot>' : '') + '</table></div>';
+
+			/* --- по партньори: кой носи оборота --- */
+			var PR = d.partners || [];
+			html += '<div class="ap-panel"><h2>По партньори<span class="sp"></span><span class="ap-muted" style="text-transform:none;letter-spacing:0">реализирани поръчки от ' + dmy(t.from) + ' · клик → картата</span></h2>' +
+				'<table class="ap-table"><thead><tr><th>Партньор</th><th style="text-align:right">Поръчки</th><th>Последна поръчка</th><th style="text-align:right">Оборот</th><th style="text-align:right">Комисиона</th><th style="text-align:right">Нетен оборот</th><th style="text-align:right">' + num(t.pct) + ' %</th></tr></thead><tbody>';
+			if (!PR.length) html += '<tr><td colspan="7" class="empty">Още няма реализирани партньорски поръчки от ' + dmy(t.from) + '.</td></tr>';
+			PR.forEach(function (p) {
+				html += '<tr class="click" data-go="#/partners/' + p.partner_id + '">' +
+					'<td><strong>' + esc(p.partner) + '</strong>' + (p.status && p.status !== 'active' ? ' ' + chip(p.status, PSTATUS_BG[p.status] || p.status) : '') + '</td>' +
+					'<td class="num">' + p.orders + '</td>' +
+					'<td>' + (p.last_order ? dmy(p.last_order) : '<span class="ap-muted">—</span>') + '</td>' +
+					'<td class="num">' + money(p.turnover, '') + '</td>' +
+					'<td class="num">− ' + money(p.commissions, '') + '</td>' +
+					'<td class="num">' + money(p.base, '') + '</td>' +
+					'<td class="num">' + money(p.pct_amount) + '</td>' +
+				'</tr>';
+			});
+			html += '</tbody></table></div>';
+
+			/* --- изплащания --- */
+			html += '<div class="ap-panel"><h2>Изплащания към мениджъра<span class="sp"></span></h2>' +
+				'<table class="ap-table"><thead><tr><th>Отбелязано</th><th>Изплатено до</th><th style="text-align:right">Сума</th><th>Бележка</th><th>От</th>' + (d.is_admin ? '<th></th>' : '') + '</tr></thead><tbody>';
+			if (!(d.payouts || []).length) html += '<tr><td colspan="6" class="empty">Още няма отбелязани изплащания.</td></tr>';
+			(d.payouts || []).forEach(function (p) {
+				html += '<tr><td>' + dt(p.created_at) + '</td><td><strong>' + dmy(p.until) + '</strong></td><td class="num">' + money(p.amount) + '</td><td>' + (p.note ? esc(p.note) : '<span class="ap-muted">—</span>') + '</td><td class="ap-muted">' + esc(p.by || '') + '</td>' +
+					(d.is_admin ? '<td style="text-align:right"><button type="button" class="ap-btn sm danger" data-bndel="' + p.id + '" title="Грешно отбелязано — махни го">×</button></td>' : '') + '</tr>';
+			});
+			html += '</tbody></table></div>';
+
+			$title.textContent = isMgr ? 'Моят бонус' : 'Бонус мениджър · ' + d.manager.name;
+			$view.innerHTML = html;
+			bindMgrSelect();
+			bindRowLinks();
+
+			var untilEl = document.getElementById('bn-until');
+			if (untilEl) untilEl.addEventListener('change', function () {
+				var v = untilEl.value; if (!v) return;
+				viewBonus._until = v;
+				api('bonus?manager=' + d.manager.id + '&until=' + encodeURIComponent(v)).then(function (r) {
+					document.getElementById('bn-amount').value = Math.max(0, r.cut.due).toFixed(2);
+					document.getElementById('bn-cut').innerHTML = 'Натрупано до ' + dmy(r.cut.until) + ': <b>' + money(r.cut.earned) + '</b> · вече изплатено: <b>' + money(r.cut.paid) + '</b> · остава: <b>' + money(r.cut.due) + '</b>. Месеците до тази дата ще се покажат като „изплатено“.';
+				}).catch(function (e) { toast(e.message, true); });
+			});
+			var payBtn = document.getElementById('bn-pay');
+			if (payBtn) payBtn.addEventListener('click', function () {
+				var u = document.getElementById('bn-until').value, a = parseFloat(document.getElementById('bn-amount').value);
+				if (!u) { toast('Избери дата „изплатено до“.', true); return; }
+				if (!(a > 0)) { toast('Сумата трябва да е положителна.', true); return; }
+				if (!confirm('Отбелязваш, че ' + d.manager.name + ' е получил/а по банка ' + money(a) + ' за бонуса до ' + dmy(u) + '?')) return;
+				payBtn.disabled = true;
+				api('bonus/pay', { method: 'POST', body: { manager: d.manager.id, until: u, amount: a, note: document.getElementById('bn-note').value } }).then(function () {
+					toast('Изплащането е отбелязано'); viewBonus({ manager: d.manager.id });
+				}).catch(function (e) { payBtn.disabled = false; notice('Грешка', e.message, true); });
+			});
+			$view.querySelectorAll('[data-bndel]').forEach(function (b) {
+				b.addEventListener('click', function () {
+					if (!confirm('Махаш това изплащане от историята? Сумата ще се върне в „за изплащане“.')) return;
+					b.disabled = true;
+					api('bonus/payouts/' + b.dataset.bndel + '/delete', { method: 'POST' }).then(function () { toast('Махнато'); viewBonus({ manager: d.manager.id }); })
+						.catch(function (e) { b.disabled = false; toast(e.message, true); });
+				});
+			});
+
+			function bindMgrSelect() {
+				var sel = document.getElementById('bn-mgr');
+				if (sel) sel.addEventListener('change', function () { viewBonus._until = ''; location.hash = '#/bonus?manager=' + sel.value; });
+			}
+		}).catch(function (e) { $view.innerHTML = '<div class="ap-panel" style="border:2px solid var(--bad)"><div style="padding:18px"><b style="color:var(--bad)">Екранът не се зареди</b><p style="margin:8px 0 12px">' + esc(e && e.message ? e.message : String(e)) + '</p><button type="button" class="ap-btn sm" onclick="location.reload()">Презареди</button> <a class="ap-btn sm ghost" href="#/dashboard">Табло</a></div></div>'; });
 	}
 
 	function bindLedgerActions(after) {
