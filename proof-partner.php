@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Proof Partner
  * Description: Партньорска (affiliate) система за proofnutrition.eu. Купон при checkout = комисиона; per-partner ставки; правила за EPACK пакетите (фиксирана сума или %, с/без отстъпка за клиента); комисиона върху Sublium подновявания (никога / първите N / докато е активен); импорт на съществуващи купони (Advanced Coupons); lock при checkout, holding период, clawback, нощна равносметка, fullscreen табло, портал /partner.
- * Version: 2.1.0
+ * Version: 2.1.1
  * GitHub Plugin URI: proclaudecopilot/proof-partner
  * Author: Proof Nutrition
  * Requires Plugins: woocommerce
@@ -23,7 +23,7 @@ if ( defined( 'PROOF_PARTNER_VERSION' ) ) {
 	} );
 	return;
 }
-define( 'PROOF_PARTNER_VERSION', '2.1.0' );
+define( 'PROOF_PARTNER_VERSION', '2.1.1' );
 define( 'PROOF_PARTNER_FILE', __FILE__ );
 define( 'PROOF_PARTNER_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -234,6 +234,24 @@ add_action( 'plugins_loaded', function () {
 					SET l.created_at = p.post_date
 					WHERE l.type = 'commission' AND l.order_id > 0" );
 			}
+		} );
+
+		// Proof 2.1.1: готов профил за вход на мениджъра — адрес /partner/proof-mgr + потребител proofmanager.
+		// Еднократно. Паролата се генерира ТУК, на сайта (не стои в кода), и се показва веднъж в
+		// wp-admin → Proof Partner → 🔑 Достъп до портала (само за администратор), откъдето и се сменя.
+		$mig( 'seed_manager_login', function () {
+			if ( ! class_exists( 'PP_Manager' ) ) return;
+			PP_Manager::ensure_role();
+			$s = get_option( 'proof_partner_settings', array() ); if ( ! is_array( $s ) ) $s = array();
+			if ( '' === PP_Manager::sanitize_slug( (string) ( $s['manager_slug'] ?? '' ) ) ) { $s['manager_slug'] = 'proof-mgr'; $s['manager_enabled'] = 1; update_option( 'proof_partner_settings', $s ); }
+			if ( get_user_by( 'login', 'proofmanager' ) || PP_Manager::users() ) return; // вече има профил — не пипаме
+			$pass = wp_generate_password( 16, false );
+			$uid  = PP_Manager::save_profile( array(
+				'id' => 0, 'login' => 'proofmanager', 'name' => 'Мениджър', 'email' => '',
+				'pass' => $pass, 'enabled' => 1, 'type' => 'manager',
+				'bonus' => array( 'from' => current_time( 'Y-m-d' ), 'pct' => 5 ),
+			) );
+			if ( ! is_wp_error( $uid ) ) update_option( PP_Manager::OPT_SEED, array( 'uid' => (int) $uid, 'login' => 'proofmanager', 'pass' => $pass, 't' => current_time( 'mysql' ) ), false );
 		} );
 
 		// Rewrite rules may be new in this version — flush lazily on next init.

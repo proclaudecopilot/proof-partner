@@ -338,6 +338,11 @@ class PP_Portal {
 			$partner = PP_Partners::get_by_user( get_current_user_id() );
 			if ( ! $partner ) return new WP_Error( 'ap_auth', 'Профилът не е партньорски.' );
 			$channels = array_filter( array_map( 'sanitize_text_field', (array) ( $_POST['channels'] ?? array() ) ) );
+			// Proof 2.1.1: партньорът сам си поправя имейла (логина) — проверка, че не е на друг профил
+			if ( isset( $_POST['email'] ) ) {
+				$e = PP_Partners::set_email( $partner->partner_id, (string) wp_unslash( $_POST['email'] ) );
+				if ( is_wp_error( $e ) ) return $e;
+			}
 			$res = PP_Partners::update( $partner->partner_id, array(
 				'legal_name' => $_POST['latin_name'] ?? '',
 				'iban'       => $_POST['iban'] ?? '',
@@ -768,6 +773,7 @@ class PP_Portal {
 			<h2>Моите данни</h2>
 			<form method="post"<?php echo $view_as ? ' style="pointer-events:none;opacity:.65"' : ''; ?>><?php wp_nonce_field( self::NONCE ); ?>
 				<input type="hidden" name="ap_portal_action" value="profile">
+				<label>Email (с него влизаш в портала)<input type="email" name="email" value="<?php echo esc_attr( wp_get_current_user()->user_email ); ?>" required autocomplete="email"></label>
 				<label>Имена на латиница (за изплащанията)<input type="text" name="latin_name" value="<?php echo esc_attr( $partner->legal_name ?? '' ); ?>"></label>
 				<label>Име в класацията на Играта (по избор — псевдоним)<input type="text" name="public_name" value="<?php echo esc_attr( $partner->public_name ?? '' ); ?>" placeholder="напр. Мая К."></label>
 				<label>IBAN за възнагражденията<input type="text" name="iban" value="<?php echo esc_attr( $partner->iban ?? '' ); ?>" placeholder="BG.."></label>

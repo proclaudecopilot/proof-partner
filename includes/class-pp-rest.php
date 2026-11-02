@@ -952,6 +952,11 @@ class PP_Rest {
 
 	public function partners_update( WP_REST_Request $req ) {
 		$b   = $req->get_json_params();
+		// Proof 2.1.1: имейлът (логинът в портала) се сменя оттук — живее на WP потребителя, не в partners
+		if ( array_key_exists( 'email', (array) $b ) ) {
+			$e = PP_Partners::set_email( (int) $req['id'], (string) $b['email'] );
+			if ( is_wp_error( $e ) ) return new WP_Error( 'ap_update', $e->get_error_message(), array( 'status' => 400 ) );
+		}
 		$res = PP_Partners::update( (int) $req['id'], array_intersect_key( (array) $b, array_flip( array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'notes', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next' ) ) ) );
 		if ( is_wp_error( $res ) ) return new WP_Error( 'ap_update', $res->get_error_message(), array( 'status' => 400 ) );
 		return $this->partners_get( $req );

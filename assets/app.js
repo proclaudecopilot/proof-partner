@@ -1096,6 +1096,7 @@
 			var dataBody =
 				'<div class="pp-grp"><b>Профил</b><div class="pp-r4">' +
 					'<div class="ap-field"><label>Име</label><input class="ap-input" id="app-name" value="' + esc(p.display_name) + '"></div>' +
+					'<div class="ap-field"><label title="Логинът в портала — живее на WP потребителя">Email (вход в портала)</label><input class="ap-input" id="app-email" type="email" value="' + esc(p.email || '') + '"></div>' +
 					'<div class="ap-field"><label>Статус</label><select class="ap-select" id="app-status" style="width:100%">' + ['applicant', 'active', 'paused', 'archived'].map(function (s) { return '<option value="' + s + '"' + (p.status === s ? ' selected' : '') + '>' + PSTATUS_BG[s] + '</option>'; }).join('') + '</select></div>' +
 					'<div class="ap-field"><label title="Поръчки преди датата = история, без комисиона">Следи се от</label><input class="ap-input" id="app-from" type="date" value="' + esc(p.tracked_from || '') + '"></div>' +
 					'<div class="ap-field"><label>История преди старта</label><div style="display:flex;gap:6px"><input class="ap-input" id="app-life" value="' + esc(p.lifetime_imported || '') + '" placeholder="—"><button class="ap-btn ghost sm" id="app-hist" title="преизчислява старите поръчки спрямо датата">↻</button></div></div>' +
@@ -1154,6 +1155,7 @@
 				var V = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
 				api('partners/' + id, { method: 'POST', body: {
 					display_name: document.getElementById('app-name').value,
+					email: V('app-email'),
 					status: document.getElementById('app-status').value,
 					rate: document.getElementById('app-rate').value,
 					payment_method: document.getElementById('app-method').value,

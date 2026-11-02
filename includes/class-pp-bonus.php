@@ -23,7 +23,9 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  *   - reversed не влиза; редовете „корекция“ (clawback след изплащане) намаляват
  *     комисионата и оборота на същата поръчка; напълно върната поръчка отпада;
  *   - фиксираните договори (pay_model = fixed, редове със статус `fixed`, 0 € комисиона в книгата)
- *     не влизат — възнаграждението им е по фактура и „нетният оборот“ не може да се сметне по ред.
+ *     ВЛИЗАТ с целия си оборот (2.1.1): възнаграждението им е по фактура, в книгата няма комисиона за
+ *     изваждане, така че нетен оборот = оборот. Броят се само ако поръчката е доставена СЕГА (clawback
+ *     при тях не оставя сума в книгата, затова се гледа статусът на поръчката).
  *
  * Нищо не се записва при изчисление — таблото е жива сметка върху книгата. Записват се
  * само ИЗПЛАЩАНИЯТА към мениджъра (таблица proof_partner_manager_payouts: до коя дата, сума).
@@ -84,10 +86,11 @@ class PP_Bonus {
 			        SUM(CASE WHEN type = 'commission' THEN base_amount ELSE 0 END) AS base,
 			        SUM(amount) AS commission,
 			        MAX(CASE WHEN type = 'commission' THEN rate_applied ELSE 0 END) AS rate,
-			        MAX(CASE WHEN type = 'commission' AND status = 'pending' THEN 1 ELSE 0 END) AS awaiting
+			        MAX(CASE WHEN type = 'commission' AND status = 'pending' THEN 1 ELSE 0 END) AS awaiting,
+			        MAX(CASE WHEN type = 'commission' AND status = 'fixed' THEN 1 ELSE 0 END) AS fixed
 			 FROM {$t}
 			 WHERE order_id > 0 AND type IN ('commission','reversal')
-			   AND ( status IN ('approved','paid')
+			   AND ( status IN ('approved','paid','fixed')
 			         OR ( status = 'pending' AND type = 'commission' AND ( note IS NULL OR note NOT LIKE %s ) ) )
 			 GROUP BY order_id, partner_id
 			 HAVING order_date IS NOT NULL AND order_date >= %s
@@ -95,13 +98,20 @@ class PP_Bonus {
 			'%' . $wpdb->esc_like( '[самопокупка]' ) . '%',
 			$from . ' 00:00:00'
 		) );
-		// Изчакващите в книгата се броят само ако поръчката е доставена СЕГА (статусът в WooCommerce, не в книгата).
+		// Изчакващите в книгата (и фиксираните договори) се броят само ако поръчката е доставена СЕГА (статусът в WooCommerce, не в книгата).
 		$check = array();
-		foreach ( (array) $rows as $r ) if ( ! empty( $r->awaiting ) ) $check[] = (int) $r->order_id;
+		foreach ( (array) $rows as $r ) if ( ! empty( $r->awaiting ) || ! empty( $r->fixed ) ) $check[] = (int) $r->order_id;
 		$st_map = $check ? proof_partner_order_statuses( $check ) : array();
 		$out = array();
 		foreach ( (array) $rows as $r ) {
-			if ( ! empty( $r->awaiting ) && ! proof_partner_status_is_won( $st_map[ (int) $r->order_id ] ?? '' ) ) continue; // още пътува — чака доставка
+			if ( ( ! empty( $r->awaiting ) || ! empty( $r->fixed ) ) && ! proof_partner_status_is_won( $st_map[ (int) $r->order_id ] ?? '' ) ) continue; // още пътува / върната — не се брои
+			if ( ! empty( $r->fixed ) ) {
+				// 2.1.1: фиксиран договор по фактура — 0 € комисиона в книгата, целият оборот е нетен оборот за мениджъра
+				$base = round( (float) $r->base, 2 );
+				if ( $base <= 0 ) continue;
+				$out[] = (object) array( 'order_id' => (int) $r->order_id, 'partner_id' => (int) $r->partner_id, 'date' => substr( (string) $r->order_date, 0, 10 ), 'base' => $base, 'commission' => 0.0, 'mgr_base' => $base, 'fixed' => 1 );
+				continue;
+			}
 			$net_c = round( (float) $r->commission, 2 );
 			if ( $net_c <= 0 ) continue; // напълно върната / изтеглена след изплащане — няма оборот
 			$base = round( (float) $r->base, 2 );

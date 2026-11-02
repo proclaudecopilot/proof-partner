@@ -223,6 +223,10 @@ class PP_Admin {
 			if ( is_wp_error( $r ) ) $fail( $r );
 			$this->redirect( $back + array( 'ap_msg' => 'mgr_deleted' ) );
 		}
+		if ( 'mgr_seed_hide' === $action ) {
+			delete_option( PP_Manager::OPT_SEED );
+			$this->redirect( $back + array( 'ap_msg' => 'mgr_seed_hidden' ) );
+		}
 		$fail( 'Непознато действие.' );
 	}
 
@@ -242,6 +246,13 @@ class PP_Admin {
 
 		echo '<div class="wrap"><h1>🔑 Достъп до портала</h1>';
 		$this->notices();
+		/* 2.1.1: началната парола на готовия профил — генерирана на сайта при ъпдейта, показва се докато не бъде сменена или скрита */
+		$seed = get_option( PP_Manager::OPT_SEED );
+		if ( is_array( $seed ) && ! empty( $seed['pass'] ) && get_user_by( 'id', (int) ( $seed['uid'] ?? 0 ) ) ) {
+			echo '<div class="notice notice-info" style="padding:12px 16px"><p style="margin:0 0 6px"><strong>Готов профил за вход на мениджъра</strong> (създаден при ъпдейта на ' . esc_html( (string) ( $seed['t'] ?? '' ) ) . '). Прати му данните и го накарай да си смени паролата — или я смени ти от „Редакция“.</p>'
+				. '<p style="margin:0 0 6px">Адрес: ' . ( $st['manager_url'] ? '<a href="' . esc_url( $st['manager_url'] ) . '" target="_blank" rel="noopener"><strong>' . esc_html( $st['manager_url'] ) . '</strong></a>' : '<em>(попълни адреса по-долу)</em>' ) . '<br>Потребителско име: <code>' . esc_html( (string) $seed['login'] ) . '</code><br>Начална парола: <code>' . esc_html( (string) $seed['pass'] ) . '</code></p>'
+				. '<p style="margin:0"><a class="button button-small" href="' . esc_url( $this->action_url( array( 'page' => 'proof-partner-managers', 'ap_action' => 'mgr_seed_hide' ) ) ) . '">Записах си я — скрий</a> <span class="description">При смяна на паролата се скрива сама.</span></p></div>';
+		}
 		echo '<p class="description" style="max-width:860px">Тук даваш и махаш достъп до Партньорската книга. Профилите влизат <strong>само</strong> през формата на портала (адресът по-долу) — не през wp-login и не в wp-admin. Вид достъп: <strong>Мениджър</strong> трупа бонус (процент от нетния оборот — виж условията), <strong>Потребител</strong> вижда книгата без бонус. Администраторите на WordPress имат достъп и без това.</p>';
 
 		/* --- Адрес за вход --- */
@@ -317,7 +328,7 @@ class PP_Admin {
 		}
 		if ( ! empty( $_GET['ap_msg'] ) ) {
 			$k = sanitize_key( $_GET['ap_msg'] );
-			$nice = array( 'mgr_address' => '✅ Адресът за вход е запазен.', 'mgr_created' => '✅ Достъпът е даден — прати адреса на портала, потребителското име и паролата.', 'mgr_saved' => '✅ Профилът е запазен.', 'mgr_on' => '✅ Профилът е пуснат.', 'mgr_off' => '⏸ Профилът е спрян (сесиите му са затворени).', 'mgr_deleted' => '🗑 Достъпът е махнат.' );
+			$nice = array( 'mgr_address' => '✅ Адресът за вход е запазен.', 'mgr_created' => '✅ Достъпът е даден — прати адреса на портала, потребителското име и паролата.', 'mgr_saved' => '✅ Профилът е запазен.', 'mgr_on' => '✅ Профилът е пуснат.', 'mgr_off' => '⏸ Профилът е спрян (сесиите му са затворени).', 'mgr_deleted' => '🗑 Достъпът е махнат.', 'mgr_seed_hidden' => '✅ Началната парола е скрита.' );
 			echo '<div class="notice notice-success is-dismissible"><p>' . ( isset( $nice[ $k ] ) ? esc_html( $nice[ $k ] ) : esc_html( ucwords( str_replace( '_', ' ', $k ) ) ) . '.' ) . '</p></div>';
 		}
 	}

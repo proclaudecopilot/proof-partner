@@ -30,6 +30,7 @@ class PP_Manager {
 	const META_ENABLED    = 'proof_partner_manager_enabled'; // '0' = профилът е спрян (липса = активен)
 	const META_TYPE       = 'proof_partner_portal_type';     // 'manager' (трупа бонус) | 'user' (без бонус)
 	const META_CREATED    = 'proof_partner_portal_created';  // '1' = WP потребителят е създаден от плъгина (махането го трие)
+	const OPT_SEED        = 'proof_partner_manager_seed';     // 2.1.1: началната парола на готовия профил — показва се веднъж в wp-admin, трие се при смяна/скриване
 	const MAX_FAILS = 5;
 	const LOCK_SECONDS = 900;
 
@@ -293,6 +294,8 @@ class PP_Manager {
 			$user = get_user_by( 'id', (int) $user->ID );
 			if ( '' !== $pass ) {
 				wp_set_password( $pass, (int) $user->ID );
+				$seed = get_option( self::OPT_SEED );
+				if ( is_array( $seed ) && (int) ( $seed['uid'] ?? 0 ) === (int) $user->ID ) delete_option( self::OPT_SEED ); // началната парола вече не важи
 				if ( get_current_user_id() !== (int) $user->ID ) {
 					// Старите сесии падат — новата парола важи веднага навсякъде.
 					$st = WP_Session_Tokens::get_instance( (int) $user->ID );
@@ -330,6 +333,8 @@ class PP_Manager {
 		$u = get_user_by( 'id', absint( $user_id ) );
 		if ( ! $u || ! in_array( self::ROLE, (array) $u->roles, true ) ) return new WP_Error( 'pp_mgr_404', 'Няма такъв портален профил.' );
 		if ( (int) $u->ID === get_current_user_id() ) return new WP_Error( 'pp_mgr_self', 'Не можеш да махнеш профила, с който си влязъл.' );
+		$seed = get_option( self::OPT_SEED );
+		if ( is_array( $seed ) && (int) ( $seed['uid'] ?? 0 ) === (int) $u->ID ) delete_option( self::OPT_SEED );
 		if ( '1' === (string) get_user_meta( $u->ID, self::META_CREATED, true ) ) {
 			require_once ABSPATH . 'wp-admin/includes/user.php';
 			if ( ! wp_delete_user( (int) $u->ID ) ) return new WP_Error( 'pp_mgr_del', 'WordPress не изтри потребителя.' );
