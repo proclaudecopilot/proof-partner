@@ -110,6 +110,10 @@ class PP_Schema {
 		self::ensure_column( $partners, 'msg_wish_mid', "VARCHAR(255) NOT NULL DEFAULT ''" );
 		self::ensure_column( $partners, 'msg_wish_end', "VARCHAR(255) NOT NULL DEFAULT ''" );
 		self::ensure_column( $partners, 'msg_wish_next', "VARCHAR(255) NOT NULL DEFAULT ''" );
+		/* Proof 2.2: абонаментна политика per партньор (NULL / '' = глобалното от настройките) */
+		self::ensure_column( $partners, 'sub_first_rate', 'DECIMAL(6,3) NULL DEFAULT NULL' );
+		self::ensure_column( $partners, 'sub_renewal_rate', 'DECIMAL(6,3) NULL DEFAULT NULL' );
+		self::ensure_column( $partners, 'sub_discount', "VARCHAR(12) NOT NULL DEFAULT ''" );
 		$ship = self::table( 'shipments' );
 		dbDelta( "CREATE TABLE {$ship} (
 			shipment_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

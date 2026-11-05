@@ -132,12 +132,15 @@ class PP_Partners {
 
 	public static function update( $partner_id, $fields ) {
 		global $wpdb;
-		$allowed = array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'phone', 'channels', 'notes', 'referred_by', 'public_name', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next' );
+		$allowed = array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'phone', 'channels', 'notes', 'referred_by', 'public_name', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next', 'sub_first_rate', 'sub_renewal_rate', 'sub_discount' );
 		$data    = array();
 
 		foreach ( $fields as $k => $v ) {
 			if ( ! in_array( $k, $allowed, true ) ) continue;
 			if ( 'tracked_from' === $k ) { $v = trim( (string) $v ); $t = $v ? strtotime( $v ) : false; $data['tracked_from'] = $t ? date( 'Y-m-d 00:00:00', $t ) : null; continue; }
+			/* Proof 2.2: абонаментна политика — празно = глобалното (NULL / '') */
+			if ( 'sub_first_rate' === $k || 'sub_renewal_rate' === $k ) { $v = trim( (string) $v ); if ( '' === $v ) { $data[ $k ] = null; continue; } $v = self::sanitize_rate( $v ); if ( is_wp_error( $v ) ) return $v; $data[ $k ] = $v; continue; }
+			if ( 'sub_discount' === $k ) { $data['sub_discount'] = in_array( $v, array( 'none', 'coupon' ), true ) ? $v : ''; continue; }
 			if ( 'pay_model' === $k ) { $data['pay_model'] = in_array( $v, array( 'commission', 'fixed' ), true ) ? $v : 'commission'; continue; }
 			if ( 'lifetime_imported' === $k ) { $data['lifetime_imported'] = function_exists( 'mb_substr' ) ? mb_substr( sanitize_text_field( $v ), 0, 50 ) : substr( sanitize_text_field( $v ), 0, 50 ); continue; }
 			if ( 'rate' === $k ) {

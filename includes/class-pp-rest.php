@@ -822,6 +822,11 @@ class PP_Rest {
 			'company_name'      => (string) ( $p->company_name ?? '' ), 'company_id' => (string) ( $p->company_id ?? '' ), 'company_vat' => (string) ( $p->company_vat ?? '' ), 'company_address' => (string) ( $p->company_address ?? '' ), 'company_mol' => (string) ( $p->company_mol ?? '' ),
 			'msg_behind' => (string) ( $p->msg_behind ?? '' ), 'msg_ahead' => (string) ( $p->msg_ahead ?? '' ), 'msg_wish_mid' => (string) ( $p->msg_wish_mid ?? '' ), 'msg_wish_end' => (string) ( $p->msg_wish_end ?? '' ), 'msg_wish_next' => (string) ( $p->msg_wish_next ?? '' ),
 			'msg_preview' => class_exists( 'PP_Proof' ) ? PP_Proof::fixed_message( $p, true ) : array( 'text' => '', 'why' => '' ),
+			/* Proof 2.2: абонаментна политика — личните стойности ('' = глобалното) + резолвираната политика за показване */
+			'sub_first_rate'   => isset( $p->sub_first_rate ) && null !== $p->sub_first_rate ? (string) ( 0 + (float) $p->sub_first_rate ) : '',
+			'sub_renewal_rate' => isset( $p->sub_renewal_rate ) && null !== $p->sub_renewal_rate ? (string) ( 0 + (float) $p->sub_renewal_rate ) : '',
+			'sub_discount'     => (string) ( $p->sub_discount ?? '' ),
+			'sub_policy'       => class_exists( 'PP_Offers' ) ? PP_Offers::sub_policy( (int) $p->partner_id, $p ) : null,
 			'notes'             => (string) $p->notes,
 			'created_at'        => $p->created_at,
 			'totals'            => $totals,
@@ -957,8 +962,9 @@ class PP_Rest {
 			$e = PP_Partners::set_email( (int) $req['id'], (string) $b['email'] );
 			if ( is_wp_error( $e ) ) return new WP_Error( 'ap_update', $e->get_error_message(), array( 'status' => 400 ) );
 		}
-		$res = PP_Partners::update( (int) $req['id'], array_intersect_key( (array) $b, array_flip( array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'notes', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next' ) ) ) );
+		$res = PP_Partners::update( (int) $req['id'], array_intersect_key( (array) $b, array_flip( array( 'display_name', 'status', 'rate', 'payment_method', 'payment_details', 'legal_name', 'iban', 'bic', 'notes', 'tracked_from', 'lifetime_imported', 'pay_model', 'company_name', 'company_id', 'company_vat', 'company_address', 'company_mol', 'msg_behind', 'msg_ahead', 'msg_wish_mid', 'msg_wish_end', 'msg_wish_next', 'sub_first_rate', 'sub_renewal_rate', 'sub_discount' ) ) ) );
 		if ( is_wp_error( $res ) ) return new WP_Error( 'ap_update', $res->get_error_message(), array( 'status' => 400 ) );
+		if ( class_exists( 'PP_Offers' ) ) PP_Offers::flush_policy_cache();
 		return $this->partners_get( $req );
 	}
 

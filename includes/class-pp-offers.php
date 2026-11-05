@@ -14,6 +14,12 @@
  *
  * Разбивката (по оферта, вид, база, правило, сума) е в таблица `commission_items` — една комисиона на поръчка
  * (изплащане/сторно/партиди не се пипат), разбивката е за четене и филтриране.
+ *
+ * АБОНАМЕНТНА ПОЛИТИКА (2.2.0): всеки Sublium абонаментен ред (/essentials и всеки друг план, вкл. извън оферти)
+ * без изрично правило по оферта се плаща по политиката — първа поръчка X % · подновявания Y % (режим/брой от
+ * глобалното „Подновявания") · клиентът без/с отстъпка от кода. Глобални стойности в настройките, per партньор
+ * колони sub_first_rate / sub_renewal_rate / sub_discount (NULL/'' = глобалното). Замразява се в снимката като
+ * всяко друго правило (source 'policy' / 'policy·partner').
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
@@ -88,17 +94,71 @@ class PP_Offers {
 		return $out;
 	}
 
-	/** Резолюция: лично(вид) → лично(any) → глобално(вид) → глобално(any). Връща ['rule'=>…, 'source'=>'partner'|'global'] или null */
-	public static function resolve( $scope, $kind, $pid, $partner_rules = null, $global = null ) {
-		if ( '' === $scope || in_array( $scope, self::DEAD_SCOPES, true ) ) return null;
-		$kind = 'sub' === $kind ? 'sub' : 'onetime';
-		if ( null === $partner_rules ) $partner_rules = $pid ? self::partner_rules( $pid ) : array();
-		if ( null === $global ) $global = self::global_rules();
-		foreach ( array( array( $partner_rules, 'partner' ), array( $global, 'global' ) ) as $pair ) {
-			list( $set, $src ) = $pair;
-			if ( isset( $set[ $scope ][ $kind ] ) ) return array( 'rule' => self::sanitize_rule( $set[ $scope ][ $kind ] ), 'source' => $src, 'applies' => $kind );
-			if ( isset( $set[ $scope ]['any'] ) ) return array( 'rule' => self::sanitize_rule( $set[ $scope ]['any'] ), 'source' => $src, 'applies' => 'any' );
+	/* ═══════════ 1б. Абонаментна политика (2.2.0) ═══════════ */
+
+	public static function renewal_modes() { return array( 'none', 'first_n', 'forever' ); }
+	/** Глобалните стойности (настройките), санирани. */
+	public static function global_policy() {
+		$s = proof_partner_settings();
+		$mode = (string) ( $s['renewal_mode'] ?? 'forever' ); if ( ! in_array( $mode, self::renewal_modes(), true ) ) $mode = 'forever';
+		return array(
+			'first'   => round( max( 0, min( 100, (float) str_replace( ',', '.', (string) ( $s['sub_first_rate'] ?? 10 ) ) ) ), 3 ),
+			'renewal' => round( max( 0, min( 100, (float) str_replace( ',', '.', (string) ( $s['sub_renewal_rate'] ?? 5 ) ) ) ), 3 ),
+			'disc'    => 'coupon' === ( $s['sub_customer_discount'] ?? 'none' ) ? 'coupon' : 'none',
+			'mode'    => $mode,
+			'n'       => max( 1, min( 120, (int) ( $s['renewal_n'] ?? 3 ) ) ),
+		);
+	}
+	protected static $policy_cache = array();
+	public static function flush_policy_cache() { self::$policy_cache = array(); }
+	/**
+	 * Политиката за партньор: глобалното + личните override-и (NULL/'' = глобалното).
+	 * ['first','renewal','disc','mode','n','own'=>[…],'source'=>'policy'|'policy·partner']
+	 */
+	public static function sub_policy( $pid, $partner = null ) {
+		$pid = (int) $pid;
+		if ( null === $partner && isset( self::$policy_cache[ $pid ] ) ) return self::$policy_cache[ $pid ];
+		$p = self::global_policy(); $own = array();
+		if ( null === $partner && $pid && class_exists( 'PP_Partners' ) ) $partner = PP_Partners::get( $pid );
+		if ( $partner ) {
+			if ( isset( $partner->sub_first_rate ) && null !== $partner->sub_first_rate && '' !== (string) $partner->sub_first_rate ) { $p['first'] = round( max( 0, min( 100, (float) $partner->sub_first_rate ) ), 3 ); $own[] = 'first'; }
+			if ( isset( $partner->sub_renewal_rate ) && null !== $partner->sub_renewal_rate && '' !== (string) $partner->sub_renewal_rate ) { $p['renewal'] = round( max( 0, min( 100, (float) $partner->sub_renewal_rate ) ), 3 ); $own[] = 'renewal'; }
+			if ( isset( $partner->sub_discount ) && in_array( (string) $partner->sub_discount, array( 'none', 'coupon' ), true ) ) { $p['disc'] = (string) $partner->sub_discount; $own[] = 'disc'; }
 		}
+		$p['own'] = $own; $p['source'] = $own ? 'policy·partner' : 'policy';
+		self::$policy_cache[ $pid ] = $p;
+		return $p;
+	}
+	/** Политиката като обикновено правило (comm pct · disc none/coupon · ren по глобалния режим × renewal %) — замразява се като всяко друго. */
+	public static function policy_rule( $pid, $partner = null ) {
+		$p = self::sub_policy( $pid, $partner );
+		return array( 'comm' => array( 'mode' => 'pct', 'value' => $p['first'] ), 'disc' => array( 'mode' => $p['disc'], 'value' => 0 ), 'ren' => array( 'mode' => $p['mode'], 'n' => $p['n'], 'cmode' => 'pct', 'value' => $p['renewal'] ) );
+	}
+	public static function policy_text( $p ) {
+		$f = function ( $v ) { return self::fmt( $v ) . '%'; };
+		$ren = 'none' === $p['mode'] ? 'подновявания: без' : ( 'first_n' === $p['mode'] ? 'първите ' . $p['n'] . ' подновявания ' . $f( $p['renewal'] ) : 'подновявания ' . $f( $p['renewal'] ) );
+		return 'първа ' . $f( $p['first'] ) . ' · ' . $ren . ' · клиент ' . ( 'coupon' === $p['disc'] ? 'по купона' : 'без бонус' );
+	}
+
+	/**
+	 * Резолюция: лично(вид) → лично(any) → глобално(вид) → глобално(any) → (само за абонаменти) политиката.
+	 * Връща ['rule'=>…, 'source'=>'partner'|'global'|'policy'|'policy·partner'] или null.
+	 * Редове извън оферти (_regular) имат правило само ако са абонамент (политиката).
+	 */
+	public static function resolve( $scope, $kind, $pid, $partner_rules = null, $global = null ) {
+		$kind = 'sub' === $kind ? 'sub' : 'onetime';
+		$dead = '' === $scope || in_array( $scope, self::DEAD_SCOPES, true );
+		if ( $dead && 'sub' !== $kind ) return null;
+		if ( ! $dead ) {
+			if ( null === $partner_rules ) $partner_rules = $pid ? self::partner_rules( $pid ) : array();
+			if ( null === $global ) $global = self::global_rules();
+			foreach ( array( array( $partner_rules, 'partner' ), array( $global, 'global' ) ) as $pair ) {
+				list( $set, $src ) = $pair;
+				if ( isset( $set[ $scope ][ $kind ] ) ) return array( 'rule' => self::sanitize_rule( $set[ $scope ][ $kind ] ), 'source' => $src, 'applies' => $kind );
+				if ( isset( $set[ $scope ]['any'] ) ) return array( 'rule' => self::sanitize_rule( $set[ $scope ]['any'] ), 'source' => $src, 'applies' => 'any' );
+			}
+		}
+		if ( 'sub' === $kind ) { $p = self::sub_policy( $pid ); return array( 'rule' => self::policy_rule( $pid ), 'source' => $p['source'], 'applies' => 'sub' ); }
 		return null;
 	}
 
@@ -127,6 +187,7 @@ class PP_Offers {
 		$j = wp_json_encode( $c ); return is_string( $j ) && false !== stripos( $j, 'sublium' );
 	}
 	public static function scope_label( $scope ) {
+		if ( '_regular' === $scope ) return 'извън оферти';
 		foreach ( self::catalog_cache() as $c ) if ( $c['scope'] === $scope ) return $c['label'];
 		$m = self::manual_offers(); if ( isset( $m[ $scope ]['label'] ) ) return (string) $m[ $scope ]['label'];
 		return ucfirst( (string) substr( strrchr( 'x' . $scope, ':' ), 1 ) ) ?: $scope;
@@ -168,8 +229,9 @@ class PP_Offers {
 	public function discount( $discount, $discounting_amount, $cart_item, $single, $coupon ) {
 		if ( ! is_array( $cart_item ) || ! $coupon instanceof WC_Coupon ) return $discount;
 		$pid = self::cart_partner_id( $coupon ); if ( ! $pid ) return $discount;
-		$scope = self::cart_item_scope( $cart_item ); if ( '' === $scope ) return $discount;
-		$res = self::resolve( $scope, self::cart_item_kind( $cart_item ), $pid ); if ( ! $res ) return $discount;
+		$scope = self::cart_item_scope( $cart_item ); $kind = self::cart_item_kind( $cart_item );
+		if ( '' === $scope ) { if ( 'sub' !== $kind ) return $discount; $scope = '_regular'; } /* 2.2: абонамент извън оферти → политиката */
+		$res = self::resolve( $scope, $kind, $pid ); if ( ! $res ) return $discount;
 		$d = $res['rule']['disc']; $qty = max( 1, (int) ( $cart_item['quantity'] ?? 1 ) );
 		/* fixed_cart купон: Woo разпределя сумата пропорционално по редовете — различна стойност по ред не е надеждна → само „по купона" или „без" */
 		$fixed_cart = 'fixed_cart' === $coupon->get_discount_type();
@@ -183,9 +245,10 @@ class PP_Offers {
 	/** Замразяване 1: всеки ред на поръчката носи офертата и вида си */
 	public function stamp_item( $item, $cart_item_key, $values, $order ) {
 		if ( ! is_object( $item ) || ! method_exists( $item, 'add_meta_data' ) ) return;
-		$scope = self::cart_item_scope( (array) $values ); if ( '' === $scope ) return;
+		$scope = self::cart_item_scope( (array) $values ); $kind = self::cart_item_kind( (array) $values );
+		if ( '' === $scope ) { if ( 'sub' !== $kind ) return; $scope = '_regular'; } /* 2.2: абонаментът извън оферти също се печата (вид = sub) */
 		$item->add_meta_data( self::ITEM_SCOPE, $scope, true );
-		$item->add_meta_data( self::ITEM_KIND, self::cart_item_kind( (array) $values ), true );
+		$item->add_meta_data( self::ITEM_KIND, $kind, true );
 	}
 	/** Замразяване 2: снимка на резолвираните правила за партньора на поръчката */
 	public function snapshot( $order ) {
@@ -194,7 +257,7 @@ class PP_Offers {
 		$attr = PP_Coupons::attribute_order( $order ); if ( ! $attr ) return;
 		$pid = (int) $attr['partner_id']; $pr = self::partner_rules( $pid ); $gl = self::global_rules(); $snap = array();
 		foreach ( self::order_lines( $order, false ) as $ln ) {
-			if ( '_regular' === $ln['scope'] ) continue; $key = $ln['scope'] . '|' . $ln['kind']; if ( isset( $snap[ $key ] ) ) continue;
+			if ( '_regular' === $ln['scope'] && 'sub' !== $ln['kind'] ) continue; $key = $ln['scope'] . '|' . $ln['kind']; if ( isset( $snap[ $key ] ) ) continue;
 			$res = self::resolve( $ln['scope'], $ln['kind'], $pid, $pr, $gl );
 			$snap[ $key ] = $res ? array( 'scope' => $ln['scope'], 'kind' => $ln['kind'], 'rule' => $res['rule'], 'source' => $res['source'], 'label' => self::scope_label( $ln['scope'] ) ) : array( 'scope' => $ln['scope'], 'kind' => $ln['kind'], 'rule' => null, 'source' => 'default', 'label' => self::scope_label( $ln['scope'] ) );
 		}
@@ -257,17 +320,18 @@ class PP_Offers {
 			$k = (int) ( $renewal['k'] ?? 1 ); $parent = ! empty( $renewal['parent'] ) ? wc_get_order( (int) $renewal['parent'] ) : null;
 			$snap = $parent ? $parent->get_meta( self::ORDER_RULES ) : null; $snap = is_array( $snap ) && ! empty( $snap['rules'] ) ? $snap['rules'] : array();
 			$pmap = array(); if ( $parent ) foreach ( self::order_lines( $parent, false ) as $pl ) { $pmap[ $pl['product_id'] ] = $pl; if ( $pl['variation_id'] ) $pmap[ 'v' . $pl['variation_id'] ] = $pl; }
-			$s = proof_partner_settings(); $gmode = (string) ( $s['renewal_mode'] ?? 'none' ); $gn = max( 1, (int) ( $s['renewal_n'] ?? 3 ) );
+			$pol = self::sub_policy( $pid, $partner ); /* 2.2: абонаментната политика на партньора (жива — режимът/процентът за подновяване са условия на партньора, не на поръчката) */
 			foreach ( $lines as $ln ) {
 				$pl = $pmap[ 'v' . $ln['variation_id'] ] ?? ( $pmap[ $ln['product_id'] ] ?? null );
 				$scope = $pl ? $pl['scope'] : $ln['scope']; $label = self::scope_label( $scope );
 				$fr = $snap[ $scope . '|sub' ] ?? ( $snap[ $scope . '|onetime' ] ?? null );
-				$rule = $fr && ! empty( $fr['rule'] ) ? self::sanitize_rule( $fr['rule'] ) : null;
-				$rmode = $rule ? $rule['ren']['mode'] : 'inherit';
-				if ( 'inherit' === $rmode ) {
-					if ( 'none' === $gmode || ( 'first_n' === $gmode && $k > $gn ) ) { $a = 0.0; $lbl = 'подновяване №' . $k . ' · глобално: без'; $mode = 'none'; $val = 0; }
-					else { $a = round( $ln['base'] * $rate / 100, 2 ); $lbl = 'подновяване №' . $k . ' · ' . self::fmt( $rate ) . '% от ' . number_format( $ln['base'], 2 ); $mode = 'rate'; $val = $rate; }
-				} elseif ( 'none' === $rmode || ( 'first_n' === $rmode && $k > (int) $rule['ren']['n'] ) ) { $a = 0.0; $lbl = 'подновяване №' . $k . ' · правило: без'; $mode = 'none'; $val = 0; }
+				$rule = $fr && ! empty( $fr['rule'] ) ? self::sanitize_rule( $fr['rule'] ) : null; $src = $fr ? (string) ( $fr['source'] ?? 'global' ) : '';
+				/* без замразено правило (родител преди 2.2 / без оферта) или „както глобалното" → политиката: режим+N глобални, % на партньора */
+				$policy_ren = ! $rule || 'inherit' === $rule['ren']['mode'] || 0 === strpos( $src, 'policy' ); /* замразена политика → подновяванията са по ТЕКУЩИТЕ условия на партньора */
+				if ( ! $rule ) { $rule = self::policy_rule( $pid, $partner ); $src = $pol['source'] . '·live'; }
+				if ( $policy_ren ) $rule['ren'] = array( 'mode' => $pol['mode'], 'n' => $pol['n'], 'cmode' => 'pct', 'value' => $pol['renewal'] );
+				$rmode = $rule['ren']['mode'];
+				if ( 'none' === $rmode || ( 'first_n' === $rmode && $k > (int) $rule['ren']['n'] ) ) { $a = 0.0; $lbl = 'подновяване №' . $k . ' · ' . ( $policy_ren ? 'политика' : 'правило' ) . ': без'; $mode = 'none'; $val = 0; }
 				else {
 					$cm = $rule['ren']['cmode']; $cv = (float) $rule['ren']['value'];
 					if ( 'same' === $cm ) { $mode = $rule['comm']['mode']; $val = (float) $rule['comm']['value']; }
@@ -275,7 +339,7 @@ class PP_Offers {
 					$a = self::comm_amount( $mode, $val, $ln['base'], $ln['qty'], $rate );
 					$lbl = 'подновяване №' . $k . ' · ' . self::rule_text( $mode, $val, $ln['base'], $ln['qty'], $rate );
 				}
-				$items[] = array( 'scope' => $scope, 'label' => $label, 'kind' => 'renewal', 'renewal_n' => $k, 'base' => $ln['base'], 'qty' => $ln['qty'], 'mode' => $mode, 'value' => $val, 'amount' => $a, 'source' => $fr ? ( $fr['source'] ?? 'global' ) : 'default', 'text' => $lbl );
+				$items[] = array( 'scope' => $scope, 'label' => $label, 'kind' => 'renewal', 'renewal_n' => $k, 'base' => $ln['base'], 'qty' => $ln['qty'], 'mode' => $mode, 'value' => $val, 'amount' => $a, 'source' => $src ?: 'default', 'text' => $lbl );
 				$amount += $a; $notes[] = $label . ': ' . $lbl;
 			}
 		} else {
@@ -283,8 +347,9 @@ class PP_Offers {
 			$pr = $frozen ? null : self::partner_rules( $pid ); $gl = $frozen ? null : self::global_rules(); $any_rule = false;
 			foreach ( $lines as $ln ) {
 				$scope = $ln['scope']; $kind = $ln['kind'];
-				if ( '_regular' === $scope ) { $a = round( $ln['base'] * $rate / 100, 2 ); $items[] = array( 'scope' => '_regular', 'label' => 'извън оферти', 'kind' => $kind, 'renewal_n' => 0, 'base' => $ln['base'], 'qty' => $ln['qty'], 'mode' => 'rate', 'value' => $rate, 'amount' => $a, 'source' => 'default', 'text' => self::fmt( $rate ) . '% от ' . number_format( $ln['base'], 2 ) ); $amount += $a; continue; }
-				if ( $frozen ) { $fr = $snap[ $scope . '|' . $kind ] ?? ( $snap[ $scope . '|onetime' ] ?? ( $snap[ $scope . '|sub' ] ?? null ) ); $rule = $fr && ! empty( $fr['rule'] ) ? self::sanitize_rule( $fr['rule'] ) : null; $src = $fr ? ( $fr['source'] ?? 'default' ) : 'default'; }
+				/* извън оферти: по ставката — освен абонамент (2.2: политиката, замразена в снимката като '_regular|sub') */
+				if ( '_regular' === $scope && ( 'sub' !== $kind || ( $frozen && ! isset( $snap['_regular|sub'] ) ) ) ) { $a = round( $ln['base'] * $rate / 100, 2 ); $items[] = array( 'scope' => '_regular', 'label' => 'извън оферти', 'kind' => $kind, 'renewal_n' => 0, 'base' => $ln['base'], 'qty' => $ln['qty'], 'mode' => 'rate', 'value' => $rate, 'amount' => $a, 'source' => 'default', 'text' => self::fmt( $rate ) . '% от ' . number_format( $ln['base'], 2 ) ); $amount += $a; continue; }
+				if ( $frozen ) { $fr = $snap[ $scope . '|' . $kind ] ?? ( '_regular' === $scope ? null : ( $snap[ $scope . '|onetime' ] ?? ( $snap[ $scope . '|sub' ] ?? null ) ) ); $rule = $fr && ! empty( $fr['rule'] ) ? self::sanitize_rule( $fr['rule'] ) : null; $src = $fr ? ( $fr['source'] ?? 'default' ) : 'default'; }
 				else { $res = self::resolve( $scope, $kind, $pid, $pr, $gl ); $rule = $res ? $res['rule'] : null; $src = $res ? $res['source'] . '·live' : 'default'; }
 				if ( $rule ) { $any_rule = true; $mode = $rule['comm']['mode']; $val = (float) $rule['comm']['value']; }
 				else { $mode = 'rate'; $val = $rate; }
@@ -339,7 +404,7 @@ class PP_Offers {
 	public function r_get() {
 		$s = proof_partner_settings();
 		return rest_ensure_response( array( 'catalog' => self::catalog(), 'rules' => self::global_rules(), 'partner_counts' => self::partner_counts(), 'shrine' => class_exists( 'PShrine_Epack' ),
-			'renewal_global' => array( 'mode' => (string) ( $s['renewal_mode'] ?? 'none' ), 'n' => (int) ( $s['renewal_n'] ?? 3 ), 'rate' => (string) ( $s['renewal_rate'] ?? '' ) ) ) );
+			'renewal_global' => array( 'mode' => (string) ( $s['renewal_mode'] ?? 'forever' ), 'n' => (int) ( $s['renewal_n'] ?? 3 ), 'rate' => (string) ( $s['renewal_rate'] ?? '' ) ), 'sub_policy' => self::global_policy() ) );
 	}
 	public function r_save( WP_REST_Request $req ) {
 		$b = (array) $req->get_json_params(); $s = get_option( 'proof_partner_settings', array() ); if ( ! is_array( $s ) ) $s = array();
@@ -359,7 +424,7 @@ class PP_Offers {
 	}
 	public function r_partner_get( WP_REST_Request $req ) {
 		$pid = (int) $req['id']; $p = PP_Partners::get( $pid ); if ( ! $p ) return new WP_Error( 'pp_partner', 'Няма такъв партньор.', array( 'status' => 404 ) );
-		return rest_ensure_response( array( 'partner_id' => $pid, 'rate' => (float) $p->rate, 'catalog' => array_values( array_filter( self::catalog(), function ( $c ) { return empty( $c['retired'] ); } ) ), 'global' => self::global_rules(), 'rules' => self::partner_rules( $pid ) ) );
+		return rest_ensure_response( array( 'partner_id' => $pid, 'rate' => (float) $p->rate, 'catalog' => array_values( array_filter( self::catalog(), function ( $c ) { return empty( $c['retired'] ); } ) ), 'global' => self::global_rules(), 'rules' => self::partner_rules( $pid ), 'sub_policy' => self::sub_policy( $pid, $p ) ) );
 	}
 	public function r_partner_save( WP_REST_Request $req ) {
 		global $wpdb; $pid = (int) $req['id']; if ( ! PP_Partners::get( $pid ) ) return new WP_Error( 'pp_partner', 'Няма такъв партньор.', array( 'status' => 404 ) );

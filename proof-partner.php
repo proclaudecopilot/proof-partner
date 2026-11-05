@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Proof Partner
  * Description: Партньорска (affiliate) система за proofnutrition.eu. Купон при checkout = комисиона; per-partner ставки; правила за EPACK пакетите (фиксирана сума или %, с/без отстъпка за клиента); комисиона върху Sublium подновявания (никога / първите N / докато е активен); импорт на съществуващи купони (Advanced Coupons); lock при checkout, holding период, clawback, нощна равносметка, fullscreen табло, портал /partner.
- * Version: 2.1.1
+ * Version: 2.2.0
  * GitHub Plugin URI: proclaudecopilot/proof-partner
  * Author: Proof Nutrition
  * Requires Plugins: woocommerce
@@ -23,7 +23,7 @@ if ( defined( 'PROOF_PARTNER_VERSION' ) ) {
 	} );
 	return;
 }
-define( 'PROOF_PARTNER_VERSION', '2.1.1' );
+define( 'PROOF_PARTNER_VERSION', '2.2.0' );
 define( 'PROOF_PARTNER_FILE', __FILE__ );
 define( 'PROOF_PARTNER_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -183,6 +183,16 @@ add_action( 'plugins_loaded', function () {
 			update_option( 'proof_partner_migrations', $done, false );
 		};
 		$GLOBALS['proof_partner_mig'] = $mig;
+
+		/* Proof 2.2: абонаментната политика — изрично записана при ъпдейта (10 % първа · 5 % подновявания, винаги · без бонус за клиента) */
+		$mig( 'proof_sub_policy_2_2', function () {
+			$s = get_option( 'proof_partner_settings', array() ); if ( ! is_array( $s ) ) $s = array();
+			if ( ! isset( $s['sub_first_rate'] ) ) $s['sub_first_rate'] = 10;
+			if ( ! isset( $s['sub_renewal_rate'] ) ) { $rr = trim( (string) ( $s['renewal_rate'] ?? '' ) ); $s['sub_renewal_rate'] = ( '' !== $rr && is_numeric( $rr ) ) ? round( max( 0, min( 100, (float) $rr ) ), 3 ) : 5; }
+			if ( ! isset( $s['sub_customer_discount'] ) ) $s['sub_customer_discount'] = 'none';
+			if ( empty( $s['renewal_mode'] ) || 'none' === $s['renewal_mode'] ) $s['renewal_mode'] = 'forever';
+			update_option( 'proof_partner_settings', $s );
+		} );
 
 		$mig( 'fix_literal_newlines_email', function () {
 			$s = get_option( 'proof_partner_settings', array() );
@@ -358,9 +368,13 @@ function proof_partner_settings() {
 		'legacy_link_prefixes'  => '',
 		/* Proof: EPACK пакетите + Sublium подновяванията (class-pp-proof.php) */
 		'pack_rules'            => array(),      /* 'pack:essentials' => ['mode'=>'fixed'|'pct','value'=>5,'discount'=>0]; Кутиите = 'pack:combo' */
-		'renewal_mode'          => 'none',       /* none | first_n | forever */
+		'renewal_mode'          => 'forever',    /* none | first_n | forever — режимът на абонаментната политика (2.2: по подразбиране всички подновявания) */
 		'renewal_n'             => 3,
-		'renewal_rate'          => '',           /* '' = същите правила като първата поръчка; число = % върху подновяването */
+		'renewal_rate'          => '',           /* (стар ключ, 2.2: замества се от sub_renewal_rate) */
+		/* Proof 2.2: абонаментна политика (Sublium: /essentials и всеки план) — глобални стойности; per партньор: partners.sub_first_rate / sub_renewal_rate / sub_discount */
+		'sub_first_rate'        => 10,           /* % за партньора върху абонаментните редове на ПЪРВАТА поръчка */
+		'sub_renewal_rate'      => 5,            /* % за партньора върху всяко подновяване */
+		'sub_customer_discount' => 'none',       /* none = клиентът не получава отстъпка от партньорския код върху абонамента | coupon = по купона */
 		'fixed_msg_behind'      => 'Хей, {name}! През {month} продажбите с твоя код донесоха {commission} комисиона (по {rate}%), а ти платихме фактура за {invoice}. {wish} Поздрави, екипът на {brand}',
 		'fixed_msg_ahead'       => 'Хей, {name}! През {month} продажбите с твоя код донесоха {commission} комисиона (по {rate}%), а фактурата ти беше {invoice} — изкара повече, отколкото ти платихме. Така се прави! Поздрави, екипът на {brand}',
 		'fixed_wish_mid'        => 'Надяваме се до края на месеца да имаш повече късмет!',

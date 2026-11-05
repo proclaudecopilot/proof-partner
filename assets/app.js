@@ -1014,6 +1014,9 @@
 		Promise.all([api('partners/' + id), api('proof/roi/' + id).catch(function () { return null; })]).then(function (res) {
 			var p = res[0], R = res[1] || { months: [], totals: {}, invoices: [], prev_month: null, this_month: null };
 			var fixed = p.pay_model === 'fixed';
+			/* 2.2: абонаментна политика — резолвираната (лично върху глобалното) + глобалната за плейсхолдърите */
+			var SPp = p.sub_policy || {}, SPg = (BOOT.sub_policy || {});
+			var SPtxt = (SPp.first != null ? 'първа ' + ofNum(SPp.first) + '% · ' + (SPp.mode === 'none' ? 'подновявания: без' : (SPp.mode === 'first_n' ? 'първите ' + SPp.n + ' подновявания ' : 'подновявания ') + ofNum(SPp.renewal) + '%') + ' · клиент ' + (SPp.disc === 'coupon' ? 'по купона' : 'без бонус') + ((SPp.own || []).length ? ' (лично)' : ' (глобално)') : '—');
 			var SEC = function (key, title, summary, bodyHtml, openDefault, extraClass) {
 				var open = (function () { try { var v = localStorage.getItem('pp_sec_' + key); return v === null ? openDefault : v === '1'; } catch (e) { return openDefault; } })();
 				return '<details class="pp-sec' + (extraClass ? ' ' + extraClass : '') + '" id="s-' + key + '" data-sec="' + key + '"' + (open ? ' open' : '') + '><summary><span class="t">' + title + '</span><span class="sum">' + summary + '</span><span class="car">▾</span></summary><div class="body">' + bodyHtml + '</div></details>';
@@ -1023,7 +1026,7 @@
 
 			/* ── КОЙ Е ── */
 			var html = '<a class="ap-back" href="#/partners">&larr; Всички партньори</a>' +
-				'<div class="pp-hero"><div class="av">' + esc(ini) + '</div><div><h2>' + esc(p.display_name) + '</h2><div class="meta">' + chip(p.status, PSTATUS_BG[p.status]) + (fixed ? chip('fixed', '📄 Фиксирано с фактура') : chip('cy', '% Комисиона ' + p.rate + '%')) +
+				'<div class="pp-hero"><div class="av">' + esc(ini) + '</div><div><h2>' + esc(p.display_name) + '</h2><div class="meta">' + chip(p.status, PSTATUS_BG[p.status]) + (fixed ? chip('fixed', '📄 Фиксирано с фактура') : chip('cy', '% Комисиона ' + p.rate + '%')) + (SPp.first != null ? '<span title="Абонаменти (Sublium): ' + esc(SPtxt) + '">🔁 ' + ofNum(SPp.first) + '% / ' + (SPp.mode === 'none' ? '—' : ofNum(SPp.renewal) + '%') + '</span>' : '') +
 				'<span>' + esc(p.email) + '</span>' + (p.channels ? '<span>·</span><span>' + esc(p.channels) + '</span>' : '') + (codesTxt ? '<span>·</span><span>кодове ' + codesTxt + '</span>' : '') + (p.tracked_from ? '<span>·</span><span>следи се от <b>' + esc(p.tracked_from) + '</b></span>' : '') + '</div></div>' +
 				'<div class="act"><a class="ap-btn" style="text-decoration:none" target="_blank" rel="noopener" href="' + (BOOT.home || '') + '/partner?view_as=' + id + '">👁 Като партньора</a></div></div>';
 
@@ -1104,7 +1107,13 @@
 				'<div class="pp-grp"><b>Възнаграждение</b><div class="ap-row2">' +
 					'<div class="ap-field"><label>Модел на плащане</label><select class="ap-select" id="app-model" style="width:100%"><option value="commission"' + (!fixed ? ' selected' : '') + '>Комисиона от продажбите (по ставката, през кода)</option><option value="fixed"' + (fixed ? ' selected' : '') + '>Фиксирано с фактура (продажбите се следят, комисиона не се дължи)</option></select></div>' +
 					'<div class="ap-field"><label>' + (fixed ? 'Ставка (%) — само за сравнение „ако беше на комисиона"' : 'Ставка (%) — комисионата НА ПАРТНЬОРА (отстъпката за клиента е в купона)') + '</label><input class="ap-input" id="app-rate" type="number" step="0.001" value="' + esc(p.rate) + '"></div>' +
-				'</div><div id="app-company" class="pp-company' + (fixed ? '' : ' off') + '"><div class="pp-r4">' +
+				'</div>' +
+				'<div class="ap-sub" style="margin-top:14px" title="Sublium: /essentials и всеки друг план — всеки абонаментен ред без изрично правило по оферта">Абонаменти (Sublium) · празно = глобалното</div><div class="ap-row3">' +
+					'<div class="ap-field"><label>Първа поръчка, % за партньора</label><input class="ap-input" id="app-sfirst" type="number" step="0.001" min="0" max="100" value="' + esc(p.sub_first_rate || '') + '" placeholder="' + esc(SPg.first != null ? SPg.first + '% (глобално)' : '10%') + '"></div>' +
+					'<div class="ap-field"><label>Подновявания, % за партньора</label><input class="ap-input" id="app-srenew" type="number" step="0.001" min="0" max="100" value="' + esc(p.sub_renewal_rate || '') + '" placeholder="' + esc(SPg.renewal != null ? SPg.renewal + '% (глобално)' : '5%') + '"></div>' +
+					'<div class="ap-field"><label>Бонус за клиента при абониране</label><select class="ap-select" id="app-sdisc" style="width:100%"><option value=""' + (!p.sub_discount ? ' selected' : '') + '>Глобалното (' + (SPg.disc === 'coupon' ? 'по купона' : 'без бонус') + ')</option><option value="none"' + (p.sub_discount === 'none' ? ' selected' : '') + '>Без — нищо допълнително за абонирането</option><option value="coupon"' + (p.sub_discount === 'coupon' ? ' selected' : '') + '>По купона — отстъпката на кода и върху абонамента</option></select></div>' +
+				'</div><p class="ap-hint">Сега: <b>' + esc(SPtxt) + '</b>. Подновяванията (' + (SPg.mode === 'none' ? 'никакви' : SPg.mode === 'first_n' ? 'първите ' + (SPg.n || 3) : 'всички, докато абонаментът е активен') + ' — глобална настройка в Пакети · Подновявания) се плащат по текущите условия на партньора; първата поръчка се замразява при checkout.</p>' +
+				'<div id="app-company" class="pp-company' + (fixed ? '' : ' off') + '"><div class="pp-r4">' +
 					'<div class="ap-field"><label>Фирма</label><input class="ap-input" id="app-cname" value="' + esc(p.company_name || '') + '" placeholder="Фирма ЕООД"></div>' +
 					'<div class="ap-field"><label>ЕИК</label><input class="ap-input" id="app-cid" value="' + esc(p.company_id || '') + '"></div>' +
 					'<div class="ap-field"><label>ДДС №</label><input class="ap-input" id="app-cvat" value="' + esc(p.company_vat || '') + '" placeholder="BG…"></div>' +
@@ -1167,7 +1176,8 @@
 					tracked_from: V('app-from'),
 					lifetime_imported: V('app-life'),
 					pay_model: V('app-model'), company_name: V('app-cname'), company_id: V('app-cid'), company_vat: V('app-cvat'), company_mol: V('app-cmol'), company_address: V('app-caddr'),
-					msg_behind: V('app-msgb'), msg_ahead: V('app-msga'), msg_wish_mid: V('app-msgwm'), msg_wish_end: V('app-msgwe'), msg_wish_next: V('app-msgwn')
+					msg_behind: V('app-msgb'), msg_ahead: V('app-msga'), msg_wish_mid: V('app-msgwm'), msg_wish_end: V('app-msgwe'), msg_wish_next: V('app-msgwn'),
+					sub_first_rate: V('app-sfirst'), sub_renewal_rate: V('app-srenew'), sub_discount: V('app-sdisc')
 				}}).then(function () {
 					if (!(p.coupons || []).length) { toast('Запазено'); viewPartner(id); refreshOwed(); return; }
 					/* след Запази: проверка на всички поръчки с кодовете му → историята се преизчислява спрямо „Следи се от" */
@@ -1703,7 +1713,7 @@
 	function ofNum(v) { return String(Math.round((Number(v) || 0) * 100) / 100).replace('.', ','); }
 	function ofCommTxt(r, rate) { var c = r.comm || {}; return c.mode === 'fixed' ? 'фикс ' + ofNum(c.value) + ' € / бр.' : c.mode === 'pct' ? ofNum(c.value) + '% от офертата' : c.mode === 'none' ? 'без комисиона' : 'по ставката' + (rate != null ? ' (' + ofNum(rate) + '%)' : ''); }
 	function ofDiscTxt(r) { var d = r.disc || {}; return d.mode === 'pct' ? '−' + ofNum(d.value) + '%' : d.mode === 'fixed' ? '−' + ofNum(d.value) + ' € / бр.' : d.mode === 'none' ? 'без отстъпка' : 'по купона'; }
-	function ofRenTxt(r) { var n = r.ren || {}; if (n.mode === 'inherit' || !n.mode) return 'както глобалното'; if (n.mode === 'none') return 'никога'; var how = n.cmode === 'pct' ? ' × ' + ofNum(n.value) + '%' : n.cmode === 'fixed' ? ' × фикс ' + ofNum(n.value) + ' €' : ' · както 1-вата'; return (n.mode === 'first_n' ? 'първите ' + (n.n || 3) : 'винаги') + how; }
+	function ofRenTxt(r) { var n = r.ren || {}; if (n.mode === 'inherit' || !n.mode) return 'по абонаментната политика'; if (n.mode === 'none') return 'никога'; var how = n.cmode === 'pct' ? ' × ' + ofNum(n.value) + '%' : n.cmode === 'fixed' ? ' × фикс ' + ofNum(n.value) + ' €' : ' · както 1-вата'; return (n.mode === 'first_n' ? 'първите ' + (n.n || 3) : 'винаги') + how; }
 	/* карти: catalog [{scope,label,source,retired,manual,sub_capable}], rules {scope:{applies:rule}}, opts {rate, personal:{scope:{applies:rule}} (в картата на партньора), counts, onEdit(scope, applies)} */
 	function offerCards(catalog, rules, opts) {
 		opts = opts || {}; var personal = opts.personal || null;
@@ -1716,7 +1726,7 @@
 			if (personal) badges += own ? '<span class="bd me">лично</span>' : (glob ? '<span class="bd gl">глобално</span>' : '');
 			else if (opts.counts && opts.counts[c.scope]) badges += '<span class="bd me" title="партньори със свое правило">' + opts.counts[c.scope] + ' лични</span>';
 			var body = '';
-			if (empty) body = '<span class="bd new">без правило → по ставката · по купона</span>';
+			if (empty) body = '<span class="bd new">без правило → 1×: по ставката · по купона' + (c.sub_capable !== false ? ' · 🔁: абонаментната политика' : '') + '</span>';
 			else Object.keys(set).forEach(function (ap) { var r = set[ap];
 				body += (Object.keys(set).length > 1 ? '<div class="of-ap">' + OF_APPLIES[ap] + '</div>' : '') +
 					'<div class="kv"><span>Комисиона</span><b>' + esc(ofCommTxt(r, opts.rate)) + '</b></div><div class="kv"><span>Клиент</span><b>' + esc(ofDiscTxt(r)) + '</b></div>' +
@@ -1840,7 +1850,7 @@
 			var tiles = (d.totals || []).map(function (t) { return '<a href="#/commissions?status=offers' + (pid ? '&partner=' + pid : '') + (scope === t.scope ? '' : '&scope=' + encodeURIComponent(t.scope)) + '" class="of-tile' + (scope === t.scope ? ' on' : '') + '"><div class="l">' + esc(t.label) + '</div><div class="v">' + t.orders + ' <small>поръчки</small></div><div class="s">комисиона <b>' + money(t.amount) + '</b> · база ' + money(t.base) + (t.subs || t.renewals ? ' · 🔁 ' + (t.subs + t.renewals) : '') + '</div></a>'; }).join('');
 			var rows = (d.rows || []).map(function (r) {
 				return '<tr><td>' + dt(r.created_at) + '</td><td style="white-space:nowrap"><a href="#/partners/' + r.partner_id + '"><strong>' + esc(r.partner) + '</strong></a></td><td style="white-space:nowrap"><strong>#' + r.order_id + '</strong> <code class="ap-code">' + esc((r.coupon_code || '').toUpperCase()) + '</code></td>' +
-					'<td><span class="split">' + r.items.map(function (i) { return '<span class="' + (i.scope === '_regular' ? '' : i.kind === 'renewal' ? 's' : 'e') + '" title="' + esc(i.source) + '">' + esc(i.label) + (i.kind === 'sub' ? ' 🔁' : i.kind === 'renewal' ? ' 🔁 №' + i.renewal_n : '') + ' · ' + esc(i.text) + (i.source === 'partner' ? ' <i>(лично)</i>' : '') + '</span>'; }).join('') + '</span></td>' +
+					'<td><span class="split">' + r.items.map(function (i) { return '<span class="' + (i.scope === '_regular' ? '' : i.kind === 'renewal' ? 's' : 'e') + '" title="' + esc(i.source) + '">' + esc(i.label) + (i.kind === 'sub' ? ' 🔁' : i.kind === 'renewal' ? ' 🔁 №' + i.renewal_n : '') + ' · ' + esc(i.text) + (i.source === 'partner' ? ' <i>(лично)</i>' : (i.source || '').indexOf('policy') === 0 ? ' <i>(' + ((i.source || '').indexOf('partner') > 0 ? 'лична ' : '') + 'абон. политика)</i>' : '') + '</span>'; }).join('') + '</span></td>' +
 					'<td class="num ' + (r.status === 'approved' ? 'pos' : r.status === 'paid' ? 'paid' : '') + '">' + money(r.amount, r.currency) + '</td><td>' + chip(r.status) + '</td></tr>';
 			}).join('');
 			host.innerHTML = '<div style="padding:12px 18px 4px"><div class="of-tiles">' + (tiles || '<p class="ap-muted">Още няма разбивки — появяват се с първите комисиони след 2.0.</p>') + '</div>' + (scope ? '<p style="margin:8px 0 0"><a href="#/commissions?status=offers' + (pid ? '&partner=' + pid : '') + '" class="ap-btn sm ghost">× само ' + esc(scope) + '</a></p>' : '') + '</div>' +
@@ -1861,11 +1871,15 @@
 				}).join('') + '</div>' +
 				'<p class="ap-hint" style="margin-top:12px">Поръчка в избран статус носи комисиона (одобрява се след периода на задържане). Останалите статуси са „по пътя" — изчакваща. Отказана / върната / неуспешна винаги е сторно. Промяната важи веднага и за фоновата проверка.</p>' +
 				'</div></div>';
-			html += '<div class="ap-panel"><h2>Подновявания на абонаменти (Sublium)<span class="sp"></span></h2><div style="padding:0 18px 16px"><div class="ap-row2">' +
-				'<div class="ap-field"><label>Комисиона върху подновяванията</label><select class="ap-input" id="pr-rmode"><option value="none"' + (m.renewal_mode === 'none' ? ' selected' : '') + '>Никога — само първата поръчка</option><option value="first_n"' + (m.renewal_mode === 'first_n' ? ' selected' : '') + '>Първите N подновявания</option><option value="forever"' + (m.renewal_mode === 'forever' ? ' selected' : '') + '>Всички, докато абонаментът е активен</option></select></div>' +
+			var SP = m.sub_policy || {};
+			html += '<div class="ap-panel"><h2>Абонаменти (Sublium) · партньорска политика<span class="sp"></span><span class="ap-muted" style="font-weight:600;text-transform:none;letter-spacing:0">/essentials и всеки друг план · важи за всеки абонаментен ред без изрично правило по оферта' + (m.sublium === false ? ' · <b style="color:var(--bad)">Sublium не е намерен</b>' : '') + '</span></h2><div style="padding:0 18px 16px"><div class="ap-row3">' +
+				'<div class="ap-field"><label>Първа поръчка — комисиона за партньора, %</label><input class="ap-input" id="pr-sfirst" type="number" step="0.1" min="0" max="100" value="' + esc(SP.first != null ? SP.first : 10) + '"></div>' +
+				'<div class="ap-field"><label>Подновявания — комисиона за партньора, %</label><input class="ap-input" id="pr-srenew" type="number" step="0.1" min="0" max="100" value="' + esc(SP.renewal != null ? SP.renewal : 5) + '"></div>' +
+				'<div class="ap-field"><label>Клиентът получава ли отстъпка от кода върху абонамента</label><select class="ap-input" id="pr-sdisc"><option value="none"' + (SP.disc !== 'coupon' ? ' selected' : '') + '>Не — нищо допълнително за абонирането</option><option value="coupon"' + (SP.disc === 'coupon' ? ' selected' : '') + '>Да — по купона (както при еднократните)</option></select></div></div>' +
+				'<div class="ap-row2">' +
+				'<div class="ap-field"><label>Кои подновявания носят комисиона</label><select class="ap-input" id="pr-rmode"><option value="forever"' + (m.renewal_mode === 'forever' || !m.renewal_mode ? ' selected' : '') + '>Всички, докато абонаментът е активен</option><option value="first_n"' + (m.renewal_mode === 'first_n' ? ' selected' : '') + '>Само първите N подновявания</option><option value="none"' + (m.renewal_mode === 'none' ? ' selected' : '') + '>Никакви — само първата поръчка</option></select></div>' +
 				'<div class="ap-field"><label>N (за „първите N")</label><input class="ap-input" id="pr-rn" type="number" min="1" max="120" value="' + esc(m.renewal_n || 3) + '"></div></div>' +
-				'<div class="ap-field"><label>Ставка за подновяване, % (празно = същите правила като първата поръчка)</label><input class="ap-input" id="pr-rrate" type="number" step="0.1" min="0" max="100" value="' + esc(m.renewal_rate || '') + '" style="max-width:160px"></div>' +
-				'<p class="ap-muted">Подновяването няма купон при checkout — партньорът се взима от lock-а на родителската поръчка на същия абонамент (_sublium_subscription_id). Еднократните поръчки са винаги само веднъж. Броенето „№k" гледа колко по-ранни подновявания на абонамента вече са с комисиона.</p>' +
+				'<p class="ap-muted">Стойностите тук са по подразбиране; всеки партньор може да има свои (картата → Данни → Възнаграждение → Абонаменти). Първата поръчка се замразява при checkout (промяна тук важи за нови поръчки); подновяванията се плащат по текущите условия на партньора. Подновяването се разпознава по Sublium (_sublium_wcs_subscription_renewal / _sublium_wcs_subscription_id), партньорът идва от lock-а на родителската поръчка. Броенето „№k" гледа колко по-ранни подновявания на абонамента вече са с комисиона. Изрично правило по оферта (горе) бие политиката.</p>' +
 				'</div></div>' +
 				'<div class="ap-actions"><button class="ap-btn" id="pr-save">Запази</button><span class="ap-hint">важи за поръчки от този момент (lock при checkout)</span></div>';
 			$view.innerHTML = html;
@@ -1875,7 +1889,7 @@
 				var btn = this; btn.disabled = true;
 				var wonSel = Array.prototype.map.call(document.querySelectorAll('.pr-won:checked'), function (c) { return c.value; });
 				if (!wonSel.length) { btn.disabled = false; toast('Избери поне един „спечелен" статус.', true); return; }
-				api('proof/settings', { method: 'POST', body: { won_statuses: wonSel, renewal_mode: document.getElementById('pr-rmode').value, renewal_n: document.getElementById('pr-rn').value, renewal_rate: document.getElementById('pr-rrate').value } })
+				api('proof/settings', { method: 'POST', body: { won_statuses: wonSel, renewal_mode: document.getElementById('pr-rmode').value, renewal_n: document.getElementById('pr-rn').value, sub_first_rate: document.getElementById('pr-sfirst').value, sub_renewal_rate: document.getElementById('pr-srenew').value, sub_customer_discount: document.getElementById('pr-sdisc').value } })
 					.then(function () { btn.disabled = false; toast('Запазено — на живо е'); }).catch(function (e) { btn.disabled = false; toast(e.message, true); });
 			});
 		}).catch(function (e) { toast(e.message, true); });

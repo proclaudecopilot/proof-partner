@@ -31,6 +31,7 @@ class PP_App {
 			'settingsUrl'=> admin_url( 'admin.php?page=proof-partner-settings' ),
 			'defaultRate' => (float) proof_partner_settings()['default_rate'],
 			'defaultCoupon' => (float) proof_partner_settings()['default_coupon_amount'],
+			'sub_policy' => class_exists( 'PP_Offers' ) ? PP_Offers::global_policy() : null, // Proof 2.2: глобалната абонаментна политика (плейсхолдъри в картата)
 			'logoUrl'    => ( proof_partner_settings()['brand_logo_url'] ?: '' ),
 			'brand'      => proof_partner_brand_name(),
 			// Proof 2.1: мениджър (роля proof_partner_manager) / администратор; „💶 Бонус“ в менюто —

@@ -8,9 +8,14 @@
  *    пакетната част), и дали клиентът получава отстъпка от кода (discount 0/1). Пакетът се
  *    разпознава по line item meta `_pshrine_ins_scope` = 'pack:{id}' (Shrine Insights) или по
  *    order meta `_pshrine_combo_snapshot` (Кутиите → ключ 'combo').
- * 3. Sublium подновявания (`renewal_mode`): none | first_n | forever. Подновяването няма купон при
- *    checkout → engine-ът пита `proof_partner_fallback_attribution`; тук намираме родителската
- *    поръчка (lock-а ѝ) и решаваме дали k-тото подновяване носи комисиона.
+ * 3. Sublium подновявания: подновяването се разпознава по `_sublium_wcs_subscription_renewal` = yes /
+ *    `_sublium_wcs_subscription_id` + таблицата `sublium_wcs_subscriptions.parent_order_id` (2.2.0 — старите
+ *    ключове `_sublium_subscription_id` остават като резерва). Родителската поръчка (lock-ът ѝ) дава партньора;
+ *    k-тото подновяване носи комисиона по абонаментната политика (PP_Offers::sub_policy: режим/N глобални,
+ *    % per партньор), а изричните правила по оферти в снимката на родителя могат да включат подновяване
+ *    и при политика „никога". Sublium копира партньорския купон върху подновяването (с отстъпката, замразена
+ *    при checkout), затова engine-ът го вижда с атрибуция по код — тук я подменяме с подновяване, иначе
+ *    щеше да се плати като първа поръчка.
  * 4. Импорт на съществуващи WC купони (Advanced Coupons) като партньорски кодове — REST.
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -23,6 +28,8 @@ class PP_Proof {
 		add_filter( 'pshrine_epack_allowed_coupons', array( $this, 'allow_partner_codes' ) );
 		/* 2.0: отстъпката за клиента и сметката по оферти са в PP_Offers (class-pp-offers.php); maybe_zero_discount/calc остават само за smoke тестовете */
 		add_filter( 'proof_partner_fallback_attribution', array( $this, 'renewal_attribution' ), 10, 2 );
+		/* 2.2: Shrine пита „има ли партньорски код/линк в кошницата" (шейкърът с първата доставка е само за такива поръчки) */
+		add_filter( 'pshrine_cart_is_affiliate', array( $this, 'cart_is_affiliate' ), 10, 2 );
 		add_action( 'rest_api_init', array( $this, 'routes' ) );
 		add_action( 'woocommerce_order_status_changed', array( $this, 'shipment_status_sync' ), 30, 3 ); /* служебните пратки следят статуса на поръчката */
 	}
@@ -46,6 +53,23 @@ class PP_Proof {
 		}
 		if ( class_exists( 'PShrine_Combo_Cart' ) ) $out[] = array( 'scope' => 'pack:combo', 'name' => 'Кутии (Протеин + Креатин)', 'archived' => false );
 		return $out;
+	}
+
+	/**
+	 * Партньорска ли е кошницата: приложен активен партньорски код или уловен партньорски линк в сесията.
+	 * Отговаря на Shrine (`pshrine_cart_is_affiliate`) — PShrine_Welcome_Gift дава шейкъра с първата доставка само тогава.
+	 */
+	public function cart_is_affiliate( $answer, $cart = null ) {
+		if ( ! function_exists( 'WC' ) ) return false;
+		if ( ! $cart ) $cart = WC()->cart;
+		if ( $cart && method_exists( $cart, 'get_applied_coupons' ) ) {
+			foreach ( (array) $cart->get_applied_coupons() as $code ) {
+				$map = PP_Coupons::get_mapping_by_code( $code );
+				if ( $map && 1 === (int) $map->active ) { $p = PP_Partners::get( (int) $map->partner_id ); if ( $p && 'active' === $p->status ) return true; }
+			}
+		}
+		if ( WC()->session && '' !== (string) WC()->session->get( PP_Attribution::SESSION_LINK ) ) return true;
+		return false;
 	}
 
 	/* ── 1. EPACK бял списък ── */
@@ -111,46 +135,100 @@ class PP_Proof {
 	}
 
 	/* ── 3. Sublium подновявания ── */
+	const SUB_META_KEYS = array( '_sublium_wcs_subscription_id', '_sublium_subscription_id', 'sublium_subscription_id', 'subscription_id' );
+
+	/** ID на Sublium абонамента, който поръчката носи (0 = не е абонаментна поръчка). */
+	public static function sub_id_of( WC_Order $order ) {
+		foreach ( self::SUB_META_KEYS as $k ) { $v = $order->get_meta( $k ); if ( is_array( $v ) ) $v = reset( $v ); if ( (int) $v ) return (int) $v; }
+		return 0;
+	}
+	protected static $sub_table = null;
+	/** Таблицата на Sublium (prefix_sublium_wcs_subscriptions) или '' */
+	public static function sub_table() {
+		global $wpdb;
+		if ( null === self::$sub_table ) { $t = $wpdb->prefix . 'sublium_wcs_subscriptions'; self::$sub_table = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) ? $t : ''; }
+		return self::$sub_table;
+	}
+	/** Родителската (първата) поръчка на абонамента според Sublium (0 = неизвестна). */
+	public static function sublium_parent_order( $sub_id ) {
+		global $wpdb; $t = self::sub_table(); if ( ! $t || ! (int) $sub_id ) return 0;
+		return (int) $wpdb->get_var( $wpdb->prepare( "SELECT parent_order_id FROM `{$t}` WHERE id = %d", (int) $sub_id ) );
+	}
+	/**
+	 * Подновяване ли е поръчката → ID на абонамента, иначе 0.
+	 * Sublium: `_sublium_wcs_subscription_renewal` = yes (и payoff), иначе таблицата казва коя е родителската;
+	 * без таблица — parent_lock решава по датите (старото поведение: подновяване = има по-стара поръчка на абонамента).
+	 */
 	public static function is_renewal( WC_Order $order ) {
-		$sub = (int) $order->get_meta( '_sublium_subscription_id' );
-		if ( ! $sub ) return 0;
-		/* родителската поръчка също може да носи меtата — подновяване е само ако има ПО-РАННА поръчка със същия абонамент */
+		$sub = self::sub_id_of( $order ); if ( ! $sub ) return 0;
+		if ( 'yes' === (string) $order->get_meta( '_sublium_wcs_subscription_renewal' ) || 'yes' === (string) $order->get_meta( '_sublium_wcs_subscription_payoff' ) ) return $sub;
+		$po = self::sublium_parent_order( $sub );
+		if ( $po && $po === (int) $order->get_id() ) return 0; /* това е първата поръчка */
 		return $sub;
 	}
-	/* Поръчките на абонамента, най-старата първа */
+	/* Поръчките на абонамента (по мета, postmeta + HPOS), най-старата първа */
 	public static function subscription_orders( $sub_id, $exclude_id = 0 ) {
-		$ids = wc_get_orders( array( 'limit' => 50, 'orderby' => 'date', 'order' => 'ASC', 'return' => 'ids', 'meta_key' => '_sublium_subscription_id', 'meta_value' => (string) $sub_id, 'type' => 'shop_order' ) );
-		return array_values( array_filter( array_map( 'intval', (array) $ids ), function ( $i ) use ( $exclude_id ) { return $i !== (int) $exclude_id; } ) );
+		global $wpdb; $ids = array(); $val = (string) (int) $sub_id; if ( ! (int) $sub_id ) return $ids;
+		$in = "'" . implode( "','", array_map( 'esc_sql', self::SUB_META_KEYS ) ) . "'";
+		$hpos = $wpdb->prefix . 'wc_orders_meta';
+		static $has_hpos = null; if ( null === $has_hpos ) $has_hpos = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $hpos ) ) === $hpos );
+		if ( $has_hpos ) $ids = array_merge( $ids, (array) $wpdb->get_col( $wpdb->prepare( "SELECT m.order_id FROM `{$hpos}` m INNER JOIN `{$wpdb->prefix}wc_orders` o ON o.id = m.order_id AND o.type = 'shop_order' WHERE m.meta_key IN ({$in}) AND m.meta_value = %s LIMIT 200", $val ) ) );
+		$ids = array_merge( $ids, (array) $wpdb->get_col( $wpdb->prepare( "SELECT pm.post_id FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id AND p.post_type = 'shop_order' WHERE pm.meta_key IN ({$in}) AND pm.meta_value = %s LIMIT 200", $val ) ) );
+		$po = self::sublium_parent_order( $sub_id ); if ( $po ) $ids[] = $po;
+		$ids = array_values( array_unique( array_map( 'intval', $ids ) ) ); sort( $ids );
+		return array_values( array_filter( $ids, function ( $i ) use ( $exclude_id ) { return $i > 0 && $i !== (int) $exclude_id; } ) );
 	}
+	/** [parent_order_id, lock] на родителската поръчка на абонамента; [0, null] ако това е първата поръчка. */
 	public static function parent_lock( WC_Order $order, $sub_id ) {
-		$lock = null; $parent = 0;
-		foreach ( array( '_sublium_parent_order_id', '_sublium_original_order_id', '_parent_order_id' ) as $mk ) {
-			$pid = (int) $order->get_meta( $mk );
-			if ( $pid && ( $po = wc_get_order( $pid ) ) ) { $l = $po->get_meta( PP_Attribution::META_LOCK ); if ( is_array( $l ) && ! empty( $l['partner_id'] ) ) { return array( $pid, $l ); } }
+		$lock = null; $parent = 0; $oid = (int) $order->get_id();
+		/* 2.2: Sublium слага родителя като parent на поръчката и го пази в таблицата си */
+		$cands = array();
+		if ( (int) $order->get_parent_id() ) $cands[] = (int) $order->get_parent_id();
+		$po = self::sublium_parent_order( $sub_id ); if ( $po ) $cands[] = $po;
+		foreach ( array( '_sublium_wcs_parent_order_id', '_sublium_parent_order_id', '_sublium_original_order_id', '_parent_order_id' ) as $mk ) { $v = $order->get_meta( $mk ); if ( is_array( $v ) ) $v = reset( $v ); if ( (int) $v ) $cands[] = (int) $v; }
+		foreach ( array_unique( $cands ) as $pid ) {
+			if ( $pid === $oid ) continue;
+			$pord = wc_get_order( $pid ); if ( ! $pord ) continue;
+			$l = $pord->get_meta( PP_Attribution::META_LOCK ); if ( is_array( $l ) && ! empty( $l['partner_id'] ) ) return array( $pid, $l );
+			if ( ! $parent ) $parent = $pid; /* родител без lock — може друга по-стара поръчка да го носи */
 		}
 		$older = array();
-		foreach ( self::subscription_orders( $sub_id, $order->get_id() ) as $oid ) {
-			$po = wc_get_order( $oid ); if ( ! $po ) continue;
-			if ( $po->get_date_created() && $order->get_date_created() && $po->get_date_created() > $order->get_date_created() ) continue;
-			$older[] = $oid;
-			$l = $po->get_meta( PP_Attribution::META_LOCK );
-			if ( is_array( $l ) && ! empty( $l['partner_id'] ) && ! $lock ) { $lock = $l; $parent = $oid; }
+		foreach ( self::subscription_orders( $sub_id, $oid ) as $x ) {
+			$pord = wc_get_order( $x ); if ( ! $pord ) continue;
+			if ( $pord->get_date_created() && $order->get_date_created() && $pord->get_date_created() > $order->get_date_created() ) continue;
+			$older[] = $x;
+			$l = $pord->get_meta( PP_Attribution::META_LOCK );
+			if ( is_array( $l ) && ! empty( $l['partner_id'] ) && ! $lock ) { $lock = $l; $parent = $x; }
 		}
-		if ( ! $older ) return array( 0, null ); /* няма по-стара поръчка → това е първата, не подновяване */
+		if ( ! $older && ! $parent ) return array( 0, null ); /* няма по-стара поръчка → това е първата, не подновяване */
 		return array( $parent, $lock );
 	}
+	/**
+	 * Атрибуция на подновяване. Вика се за ВСЯКА поръчка без lock (filter `proof_partner_fallback_attribution`):
+	 * - не е подновяване → връща каквото е дошло (атрибуция по купон или null);
+	 * - подновяване → партньорът от lock-а на родителя (резерва: копираният от Sublium купон = $attr), k-та поредност,
+	 *   комисиона по абонаментната политика (режим/N глобални, % на партньора) или по изрично правило в снимката.
+	 */
 	public function renewal_attribution( $attr, $order ) {
-		if ( $attr || ! $order instanceof WC_Order ) return $attr;
-		$s = proof_partner_settings(); $mode = (string) ( $s['renewal_mode'] ?? 'none' );
+		if ( ! $order instanceof WC_Order ) return $attr;
 		$sub = self::is_renewal( $order ); if ( ! $sub ) return $attr;
 		list( $parent, $lock ) = self::parent_lock( $order, $sub );
-		if ( ! $parent || ! $lock ) return $attr;
-		/* 2.0: офертните правила на родителя могат да включат подновяване дори при глобално „никога" — PP_Offers::calc решава по редове */
-		$offer_ren = false;
-		if ( class_exists( 'PP_Offers' ) && ( $po = wc_get_order( $parent ) ) ) { $snap = $po->get_meta( PP_Offers::ORDER_RULES ); if ( is_array( $snap ) && ! empty( $snap['rules'] ) ) foreach ( $snap['rules'] as $fr ) { $rm = $fr['rule']['ren']['mode'] ?? 'inherit'; if ( in_array( $rm, array( 'first_n', 'forever' ), true ) ) { $offer_ren = true; break; } } }
-		if ( 'none' === $mode && ! $offer_ren ) return $attr;
+		if ( ! $parent ) return $attr; /* няма родител → това е първата поръчка на абонамента (атрибуцията по купон си остава) */
+		if ( ! $lock ) {
+			/* родителят няма lock (напр. кодът е дошъл по-късно) — ако Sublium е копирал партньорски купон, той е атрибуцията */
+			if ( ! $attr ) { PP_Attribution::olog( $order, sprintf( 'Подновяване на абонамент #%d: родителската поръчка няма партньор — без комисиона.', $sub ) ); return null; }
+			$lock = array( 'partner_id' => (int) $attr['partner_id'], 'coupon_code' => (string) $attr['coupon_code'], 'rate' => null );
+			if ( ! $parent ) $parent = (int) $order->get_parent_id();
+		}
 		$partner = PP_Partners::get( (int) $lock['partner_id'] );
-		if ( ! $partner || 'active' !== $partner->status ) { PP_Attribution::olog( $order, 'Подновяване: партньорът на родителската поръчка не е активен — без комисиона.' ); return $attr; }
+		if ( ! $partner || 'active' !== $partner->status ) { PP_Attribution::olog( $order, 'Подновяване: партньорът на родителската поръчка не е активен — без комисиона.' ); return null; }
+		$pol = class_exists( 'PP_Offers' ) ? PP_Offers::sub_policy( (int) $partner->partner_id, $partner ) : array( 'mode' => 'forever', 'n' => 3, 'renewal' => (float) $partner->rate );
+		$mode = (string) $pol['mode'];
+		/* изричните правила по оферти в снимката на родителя могат да включат подновяване и при политика „никога" — PP_Offers::calc решава по редове */
+		$offer_ren = false;
+		if ( class_exists( 'PP_Offers' ) && $parent && ( $po = wc_get_order( $parent ) ) ) { $snap = $po->get_meta( PP_Offers::ORDER_RULES ); if ( is_array( $snap ) && ! empty( $snap['rules'] ) ) foreach ( $snap['rules'] as $fr ) { if ( 0 === strpos( (string) ( $fr['source'] ?? '' ), 'policy' ) ) continue; /* замразената политика не е изрично правило */ $rm = $fr['rule']['ren']['mode'] ?? 'inherit'; if ( in_array( $rm, array( 'first_n', 'forever' ), true ) ) { $offer_ren = true; break; } } }
+		$note_off = function ( $why ) use ( $order, $sub, $parent ) { PP_Attribution::olog( $order, $why ); $order->update_meta_data( self::RENEWAL_META, array( 'sub' => $sub, 'parent' => $parent, 'k' => 0, 'paid' => 0 ) ); $order->save(); return null; };
+		if ( 'none' === $mode && ! $offer_ren ) return $note_off( sprintf( 'Подновяване на абонамент #%d: политиката е „без комисиона за подновявания" — без комисиона.', $sub ) );
 		/* k = поредност на подновяването: колко по-ранни подновявания на този абонамент вече са с комисиона */
 		global $wpdb;
 		$ids = self::subscription_orders( $sub, $order->get_id() );
@@ -159,12 +237,11 @@ class PP_Proof {
 			$in = implode( ',', array_map( 'intval', $ids ) );
 			$k = 1 + (int) $wpdb->get_var( "SELECT COUNT(*) FROM " . PP_Schema::table( 'commissions' ) . " WHERE type = 'commission' AND order_id IN ($in) AND order_id <> " . (int) $parent );
 		}
-		$n = max( 1, (int) ( $s['renewal_n'] ?? 3 ) );
-		if ( 'first_n' === $mode && $k > $n && ! $offer_ren ) { PP_Attribution::olog( $order, sprintf( 'Подновяване №%d > лимит %d — без комисиона.', $k, $n ) ); $order->update_meta_data( self::RENEWAL_META, array( 'sub' => $sub, 'parent' => $parent, 'k' => $k, 'paid' => 0 ) ); $order->save(); return $attr; }
-		$rr = trim( (string) ( $s['renewal_rate'] ?? '' ) );
-		$rate = '' !== $rr && is_numeric( $rr ) ? (float) $rr : ( isset( $lock['rate'] ) && null !== $lock['rate'] ? (float) $lock['rate'] : null );
+		$n = max( 1, (int) $pol['n'] );
+		if ( 'first_n' === $mode && $k > $n && ! $offer_ren ) { PP_Attribution::olog( $order, sprintf( 'Подновяване №%d > лимит %d — без комисиона.', $k, $n ) ); $order->update_meta_data( self::RENEWAL_META, array( 'sub' => $sub, 'parent' => $parent, 'k' => $k, 'paid' => 0 ) ); $order->save(); return null; }
+		$rate = (float) $pol['renewal'];
 		$order->update_meta_data( self::RENEWAL_META, array( 'sub' => $sub, 'parent' => $parent, 'k' => $k, 'paid' => 1 ) ); $order->save();
-		PP_Attribution::olog( $order, sprintf( 'Подновяване №%d на абонамент #%d (родител #%d) → %s.', $k, $sub, $parent, $partner->display_name ) );
+		PP_Attribution::olog( $order, sprintf( 'Подновяване №%d на абонамент #%d (родител #%d) → %s · %s%% по абонаментната политика.', $k, $sub, $parent, $partner->display_name, rtrim( rtrim( number_format( $rate, 3 ), '0' ), '.' ) ) );
 		return array( 'partner_id' => (int) $lock['partner_id'], 'coupon_code' => (string) ( $lock['coupon_code'] ?? '' ), 'anomaly' => '', 'rate' => $rate, 'note' => sprintf( '[подновяване №%d · абонамент #%d · родител #%d]', $k, $sub, $parent ) , 'renewal' => array( 'k' => $k, 'parent' => $parent, 'sub' => $sub ) );
 	}
 
@@ -195,7 +272,9 @@ class PP_Proof {
 	}
 	public function settings_get() {
 		$s = proof_partner_settings();
-		return rest_ensure_response( array( 'packs' => self::pack_catalog(), 'pack_rules' => self::rules(), 'renewal_mode' => (string) $s['renewal_mode'], 'renewal_n' => (int) $s['renewal_n'], 'renewal_rate' => (string) $s['renewal_rate'], 'shrine' => class_exists( 'PShrine_Epack' ),
+		$pol = class_exists( 'PP_Offers' ) ? PP_Offers::global_policy() : array();
+		return rest_ensure_response( array( 'packs' => self::pack_catalog(), 'pack_rules' => self::rules(), 'renewal_mode' => (string) ( $pol['mode'] ?? $s['renewal_mode'] ), 'renewal_n' => (int) ( $pol['n'] ?? $s['renewal_n'] ), 'renewal_rate' => (string) $s['renewal_rate'], 'shrine' => class_exists( 'PShrine_Epack' ),
+			'sub_policy' => $pol, 'sublium' => (bool) self::sub_table(),
 			'wc_statuses' => self::wc_statuses(), 'won_statuses' => proof_partner_won_statuses(), 'won_custom' => ! empty( $s['won_statuses'] ) ) );
 	}
 	/* Регистрираните Woo статуси (вкл. custom от плъгини), без вътрешните */
@@ -225,8 +304,14 @@ class PP_Proof {
 			}
 			$s['pack_rules'] = $rules;
 		}
-		if ( isset( $b['renewal_mode'] ) ) $s['renewal_mode'] = in_array( $b['renewal_mode'], array( 'none', 'first_n', 'forever' ), true ) ? $b['renewal_mode'] : 'none';
+		if ( isset( $b['renewal_mode'] ) ) $s['renewal_mode'] = in_array( $b['renewal_mode'], array( 'none', 'first_n', 'forever' ), true ) ? $b['renewal_mode'] : 'forever';
 		if ( isset( $b['renewal_n'] ) ) $s['renewal_n'] = max( 1, min( 120, (int) $b['renewal_n'] ) );
+		/* 2.2: абонаментната политика (глобални стойности; per партньор са в картата) */
+		$pct = function ( $v, $d ) { $v = trim( str_replace( ',', '.', (string) $v ) ); return ( '' === $v || ! is_numeric( $v ) ) ? $d : round( max( 0, min( 100, (float) $v ) ), 3 ); };
+		if ( isset( $b['sub_first_rate'] ) ) $s['sub_first_rate'] = $pct( $b['sub_first_rate'], 10 );
+		if ( isset( $b['sub_renewal_rate'] ) ) $s['sub_renewal_rate'] = $pct( $b['sub_renewal_rate'], 5 );
+		if ( isset( $b['sub_customer_discount'] ) ) $s['sub_customer_discount'] = 'coupon' === $b['sub_customer_discount'] ? 'coupon' : 'none';
+		if ( class_exists( 'PP_Offers' ) ) PP_Offers::flush_policy_cache();
 		if ( isset( $b['won_statuses'] ) && is_array( $b['won_statuses'] ) ) {
 			$valid = wp_list_pluck( self::wc_statuses(), 'key' ); $sel = array();
 			foreach ( $b['won_statuses'] as $x ) { $x = preg_replace( '/^wc-/', '', sanitize_key( (string) $x ) ); if ( in_array( $x, $valid, true ) && ! in_array( $x, array( 'cancelled', 'refunded', 'failed' ), true ) ) $sel[] = $x; }
